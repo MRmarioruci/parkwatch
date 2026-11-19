@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "ParkWatch",
+    "slug": "parkwatch",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "parkwatch",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0a0c11",
+    "ios": {
+      "icon": "./assets/images/icon.png",
+      "bundleIdentifier": "dev.parkwatch.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#2f6bff",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "dev.parkwatch.app",
+      "permissions": ["android.permission.CAMERA", "android.permission.INTERNET", "android.permission.WAKE_LOCK"],
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0a0c11",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "ParkWatch looks at the parking spaces you mark to tell you when one is free. Nothing is recorded.",
+          "recordAudioAndroid": false
+        }
+      ],
+      "react-native-fast-tflite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "buildArchs": ["arm64-v8a"],
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": false,
+            "extraProguardRules": "-keep class com.tflite.** { *; }\n-keep class com.margelo.nitro.** { *; }\n-keep class org.tensorflow.** { *; }"
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {}
+    }
+  }
+}
