@@ -145,7 +145,8 @@ export default function SettingsScreen() {
         <SectionTitle title="Tips" />
         <Panel style={{ padding: 16, gap: 10 }}>
           {[
-            'Mount the phone looking down at the street, plugged in.',
+            'Mount the phone looking down at the street, plugged in, with branches and railings out of the picture: nothing can see through a bush right in front of the lens.',
+            'Mark one area per parking space, or one strip with “Cars that fit here” set to how many cars it holds.',
             'Use “Test detection” after marking spots: the blue corners should sit on the cars.',
             'Keep the app open. Use the moon button to black the screen; watching continues.',
             'If a spot shows the wrong state while watching, tap “It’s taken” / “It’s free”. It learns how the spot looks from that.',

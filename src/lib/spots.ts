@@ -323,3 +323,80 @@ export function since(ts: number | null, now: number): string {
   if (m < 60) return `${m} min`;
   return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
+
+// ---------- tiling ----------
+// A wide strip of street squashed into the model's square input makes cars tall and blurry.
+// Instead, cover the region with overlapping square tiles that keep proportions and give each
+// car more pixels; run the model on each and merge the results.
+
+/** Square tiles (in pixels) covering `roi` (pixels), at most `max` of them. */
+export function tilesFor(roi: { x: number; y: number; w: number; h: number }, max = 6, scale = 0.75, overlap = 0.3): { x: number; y: number; w: number; h: number }[] {
+  const fit = (side: number) => {
+    const t = Math.min(side, roi.w, roi.h);
+    const along = (len: number) => (len <= t ? 1 : Math.ceil((len - t) / (t * (1 - overlap))) + 1);
+    return { t, nx: along(roi.w), ny: along(roi.h) };
+  };
+  let side = Math.min(roi.w, roi.h) * scale;
+  let f = fit(side);
+  while (f.nx * f.ny > max && side < Math.max(roi.w, roi.h)) {
+    side *= 1.15;
+    f = fit(side);
+  }
+  const out = [];
+  for (let j = 0; j < f.ny; j++) {
+    for (let i = 0; i < f.nx; i++) {
+      const x = f.nx === 1 ? roi.x + (roi.w - f.t) / 2 : roi.x + (i * (roi.w - f.t)) / (f.nx - 1);
+      const y = f.ny === 1 ? roi.y + (roi.h - f.t) / 2 : roi.y + (j * (roi.h - f.t)) / (f.ny - 1);
+      out.push({ x: Math.round(x), y: Math.round(y), w: Math.round(f.t), h: Math.round(f.t) });
+    }
+  }
+  return out;
+}
+
+/** Merge detections of the same vehicle from overlapping tiles (boxes cut at a tile edge too). */
+export function mergeBoxes(boxes: Box[], overlap = 0.6): Box[] {
+  const area = (b: Box) => b.w * b.h;
+  const sorted = [...boxes].sort((a, b) => b.score - a.score);
+  const out: Box[] = [];
+  for (const b of sorted) {
+    const hit = out.find((o) => {
+      const ix = Math.max(0, Math.min(o.x + o.w, b.x + b.w) - Math.max(o.x, b.x));
+      const iy = Math.max(0, Math.min(o.y + o.h, b.y + b.h) - Math.max(o.y, b.y));
+      return (ix * iy) / Math.max(1e-9, Math.min(area(o), area(b))) > overlap;
+    });
+    if (!hit) {
+      out.push({ ...b });
+      continue;
+    }
+    const x0 = Math.min(hit.x, b.x);
+    const y0 = Math.min(hit.y, b.y);
+    hit.w = Math.max(hit.x + hit.w, b.x + b.w) - x0;
+    hit.h = Math.max(hit.y + hit.h, b.y + b.h) - y0;
+    hit.x = x0;
+    hit.y = y0;
+  }
+  return out;
+}
+
+// ---------- splitting a strip into spaces ----------
+
+/**
+ * Splits a 4-corner area into `n` equal spaces along its longer side, e.g. a curb strip that
+ * holds three cars. `aspect` is frame width / height, so lengths are compared in real pixels.
+ */
+export function splitQuad(q: Pt[], n: number, aspect = 3 / 4): Pt[][] {
+  if (q.length !== 4 || n <= 1) return [q];
+  const len = (a: Pt, b: Pt) => Math.hypot((a[0] - b[0]) * aspect, a[1] - b[1]);
+  const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const [p0, p1, p2, p3] = q;
+  // Sides p0→p1 / p3→p2 against p1→p2 / p0→p3: split along the longer pair.
+  const alongA = len(p0, p1) + len(p3, p2) >= len(p1, p2) + len(p0, p3);
+  const [a0, a1, b0, b1] = alongA ? [p0, p1, p3, p2] : [p1, p2, p0, p3];
+  const out: Pt[][] = [];
+  for (let k = 0; k < n; k++) {
+    const t0 = k / n;
+    const t1 = (k + 1) / n;
+    out.push([lerp(a0, a1, t0), lerp(a0, a1, t1), lerp(b0, b1, t1), lerp(b0, b1, t0)]);
+  }
+  return out;
+}

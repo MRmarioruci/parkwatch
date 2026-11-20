@@ -2,8 +2,8 @@
 
 Point an old Android phone at the street, mark the blue-zone parking spaces you care about, and get a push notification on your own phone when one is free.
 
-- **Draw spots on the live camera.** Tap the corners of each space; save; repeat.
-- **On-device detection.** Every few seconds the app takes a silent still, crops it to your spots and runs EfficientDet-Lite2 (COCO, TensorFlow Lite) to find cars, vans, buses and motorbikes. A spot is *taken* when vehicles cover more than a set share of it, confirmed over several checks so passing traffic doesn't count.
+- **Draw spots on the live camera.** Tap the corners of each space; save; repeat. For a curb strip that holds several cars, tap its 4 corners and set *Cars that fit here*: it's saved as that many separate spaces.
+- **On-device detection.** Every few seconds the app takes a silent still, crops it to your spots, cuts that into overlapping square tiles (so cars keep their shape and get more pixels) and runs EfficientDet-Lite2 (COCO, TensorFlow Lite) to find cars, vans, buses and motorbikes. A spot is *taken* when vehicles cover more than a set share of it, confirmed over several checks so passing traffic doesn't count.
 - **Appearance memory.** Detectors lose cars behind branches. Each spot also remembers how it looked when last known taken or free (a small grayscale patch compared by normalised cross-correlation, so clouds and dusk don't matter). A taken spot stays taken until it actually looks different; a free spot that suddenly looks very different counts as taken even if no car is detected. If a spot is wrong, tap **It's taken** / **It's free** and that view becomes its reference.
 - **Alerts via [ntfy](https://ntfy.sh).** Install the ntfy app on the phone you carry, subscribe to a hard-to-guess topic, and enter the same topic in ParkWatch → Settings.
 - **Private by design.** Stills are analysed and deleted straight away. Nothing is recorded or uploaded; only the alert text leaves the phone. Note that in Switzerland private cameras generally may not monitor public ground (see the EDÖB's guidance), so keep it this way.

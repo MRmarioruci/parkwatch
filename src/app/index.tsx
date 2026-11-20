@@ -7,7 +7,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View, 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Line, Path, Polygon } from 'react-native-svg';
 
-import { since, type Box, type Pt, type Spot, type Track } from '@/lib/spots';
+import { since, splitQuad, type Box, type Pt, type Spot, type Track } from '@/lib/spots';
 import { getSettings, updateSettings, useSettings } from '@/lib/store';
 import { useWatcher } from '@/lib/watcher';
 import { Btn, Chip, Icon, Panel, SectionTitle, Tx } from '@/ui/kit';
@@ -29,9 +29,12 @@ function Watch() {
   const settings = useSettings();
   const { spots } = settings;
   const camera = useRef<CameraView>(null);
+  const scroller = useRef<ScrollView>(null);
   const [camReady, setCamReady] = useState(false);
   const [mode, setMode] = useState<Mode>('idle');
   const [draft, setDraft] = useState<Pt[]>([]);
+  // A 4-corner area can be a strip of several spaces (e.g. curb parking for three cars).
+  const [parts, setParts] = useState(1);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [blackout, setBlackout] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -67,14 +70,18 @@ function Watch() {
     setDraft((d) => [...d, [x, y]]);
   }
 
+  const split = draft.length === 4 && parts > 1;
+
   function saveSpot() {
     if (draft.length < 3) return;
-    const spot: Spot = { id: newId(), name: `Spot ${spots.length + 1}`, pts: draft };
-    updateSettings({ spots: [...spots, spot] });
+    const areas = split ? splitQuad(draft, parts, size.w && size.h ? size.w / size.h : 3 / 4) : [draft];
+    const made: Spot[] = areas.map((pts, k) => ({ id: newId() + k, name: `Spot ${spots.length + k + 1}`, pts }));
+    updateSettings({ spots: [...spots, ...made] });
     setDraft([]);
+    setParts(1);
     setMode('idle');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    setToast(`${spot.name} saved. Tap its name to rename it.`);
+    setToast(made.length > 1 ? `${made.length} spaces saved. Tap a name to rename it.` : `${made[0].name} saved. Tap its name to rename it.`);
   }
 
   async function startWatching() {
@@ -113,7 +120,7 @@ function Watch() {
   return (
     <View style={{ flex: 1, backgroundColor: C.bg }}>
       <StatusBar style="light" hidden={blackout} />
-      <ScrollView scrollEnabled={!drawing} contentContainerStyle={{ paddingTop: insets.top + 14, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + 120 }}>
+      <ScrollView ref={scroller} scrollEnabled={!drawing} contentContainerStyle={{ paddingTop: insets.top + 14, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + 120 }}>
         {/* app bar */}
         <View style={s.bar}>
           <View style={s.brand}>
@@ -130,26 +137,28 @@ function Watch() {
           </View>
         </View>
 
-        {/* hero */}
-        <View style={{ marginBottom: 18, marginHorizontal: 2 }}>
-          <Tx style={s.eyebrow}>{eyebrow}</Tx>
-          {known ? (
-            <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 10, marginTop: 2 }}>
-              <Tx style={[s.num, { color: free ? C.free : C.text }]}>{free}</Tx>
-              <Tx style={s.of}>/ {spots.length}</Tx>
-              <Tx style={{ fontSize: 16, color: C.mute }}>{free === 1 ? 'spot free' : 'spots free'}</Tx>
-            </View>
-          ) : (
-            <Tx style={s.bigIdle}>{big}</Tx>
-          )}
-          <Tx style={s.sub}>{sub}</Tx>
-        </View>
+        {/* hero (hidden while marking, to leave room for the camera) */}
+        {!drawing && (
+          <View style={{ marginBottom: 18, marginHorizontal: 2 }}>
+            <Tx style={s.eyebrow}>{eyebrow}</Tx>
+            {known ? (
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 10, marginTop: 2 }}>
+                <Tx style={[s.num, { color: free ? C.free : C.text }]}>{free}</Tx>
+                <Tx style={s.of}>/ {spots.length}</Tx>
+                <Tx style={{ fontSize: 16, color: C.mute }}>{free === 1 ? 'spot free' : 'spots free'}</Tx>
+              </View>
+            ) : (
+              <Tx style={s.bigIdle}>{big}</Tx>
+            )}
+            <Tx style={s.sub}>{sub}</Tx>
+          </View>
+        )}
 
         {/* camera */}
         <View style={s.cam} onLayout={onLayout}>
           <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" ratio="4:3" animateShutter={false} onCameraReady={() => setCamReady(true)} />
           {!settings.showPreview && !drawing && <View style={[StyleSheet.absoluteFill, { backgroundColor: '#07090d' }]} />}
-          <Overlay size={size} spots={spots} tracks={w.tracks} watching={w.watching} boxes={settings.showBoxes || drawing ? w.boxes : []} draft={drawing ? draft : []} />
+          <Overlay size={size} spots={spots} tracks={w.tracks} watching={w.watching} boxes={settings.showBoxes || drawing ? w.boxes : []} draft={drawing ? draft : []} parts={split ? parts : 1} />
           <Pressable style={StyleSheet.absoluteFill} onPress={onTap} disabled={!drawing} accessibilityLabel={drawing ? 'Tap a corner of the parking space' : undefined} />
           <View style={s.tag} pointerEvents="none">
             <View style={[s.dot, { backgroundColor: w.watching ? C.free : drawing ? C.blue : C.faint }]} />
@@ -231,6 +240,24 @@ function Watch() {
       </ScrollView>
 
       {/* dock */}
+      {drawing && draft.length === 4 && (
+        <View style={[s.partsBar, { bottom: insets.bottom + 82 }]}>
+          <View style={{ flex: 1 }}>
+            <Tx style={{ fontFamily: F.semibold, fontSize: 14 }}>Cars that fit here</Tx>
+            <Tx style={{ fontSize: 12, color: C.mute }}>{parts > 1 ? `Saved as ${parts} separate spaces` : 'One space. Strip of several? Add more.'}</Tx>
+          </View>
+          <View style={s.stepper}>
+            <Pressable accessibilityLabel="Fewer spaces" onPress={() => setParts((n) => Math.max(1, n - 1))} hitSlop={4} style={s.stepBtn}>
+              <Icon name="minus" size={16} color={C.mute} />
+            </Pressable>
+            <Tx style={{ minWidth: 28, textAlign: 'center', fontFamily: F.display, fontSize: 18 }}>{parts}</Tx>
+            <Pressable accessibilityLabel="More spaces" onPress={() => setParts((n) => Math.min(8, n + 1))} hitSlop={4} style={s.stepBtn}>
+              <Icon name="plus" size={16} color={C.mute} />
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       <View style={[s.dock, { paddingBottom: insets.bottom + 14 }]}>
         {drawing ? (
           <>
@@ -239,6 +266,7 @@ function Watch() {
               title="Cancel"
               onPress={() => {
                 setDraft([]);
+                setParts(1);
                 setMode('idle');
               }}
             />
@@ -258,6 +286,7 @@ function Watch() {
                 w.clearBoxes();
                 setDraft([]);
                 setMode('drawing');
+                scroller.current?.scrollTo({ y: 0, animated: true });
               }}
               disabled={!camReady}
             />
@@ -282,7 +311,7 @@ function Watch() {
   );
 }
 
-function Overlay({ size, spots, tracks, watching, boxes, draft }: { size: { w: number; h: number }; spots: Spot[]; tracks: Record<string, Track>; watching: boolean; boxes: Box[]; draft: Pt[] }) {
+function Overlay({ size, spots, tracks, watching, boxes, draft, parts }: { size: { w: number; h: number }; spots: Spot[]; tracks: Record<string, Track>; watching: boolean; boxes: Box[]; draft: Pt[]; parts: number }) {
   const { w, h } = size;
   if (!w) return null;
   const pts = (p: Pt[]) => p.map(([x, y]) => `${x * w},${y * h}`).join(' ');
@@ -305,6 +334,10 @@ function Overlay({ size, spots, tracks, watching, boxes, draft }: { size: { w: n
         })}
         {draft.length > 0 && (
           <>
+            {parts > 1 &&
+              splitQuad(draft, parts, w / h)
+                .slice(1)
+                .map((q, i) => <Line key={`p${i}`} x1={q[0][0] * w} y1={q[0][1] * h} x2={q[3][0] * w} y2={q[3][1] * h} stroke={C.blueText} strokeWidth={2} />)}
             {draft.length > 2 && <Polygon points={pts(draft)} fill="rgba(47,107,255,0.18)" stroke="none" />}
             {draft.map(([x, y], i) => {
               const next = draft[i + 1] ?? (draft.length > 2 ? draft[0] : null);
@@ -432,6 +465,9 @@ const s = StyleSheet.create({
   rail: { width: 4, alignSelf: 'stretch', borderTopRightRadius: 4, borderBottomRightRadius: 4 },
   name: { color: C.text, fontFamily: F.semibold, fontSize: 15.5, padding: 0 },
   meter: { flex: 1, maxWidth: 110, height: 4, borderRadius: 4, backgroundColor: C.surface2 },
+  partsBar: { position: 'absolute', left: GUTTER, right: GUTTER, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, paddingLeft: 16, borderRadius: R, backgroundColor: C.surface, borderWidth: 1, borderColor: C.hair },
+  stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
+  stepBtn: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   fixBtn: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, backgroundColor: C.surface2, marginRight: 6 },
   iconBtn: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   testRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, padding: 14, borderRadius: R, backgroundColor: C.blueSoft },

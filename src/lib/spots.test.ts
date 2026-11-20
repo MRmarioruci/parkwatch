@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canAlert, coverage, extractPatch, inPoly, inQuietHours, MEMORY_DEFAULTS, newTrack, override, parseDetections, regionOfInterest, samplePoints, similarity, step, type Pt, type Track } from './spots';
+import { canAlert, coverage, extractPatch, inPoly, inQuietHours, MEMORY_DEFAULTS, mergeBoxes, newTrack, override, parseDetections, regionOfInterest, samplePoints, similarity, splitQuad, step, tilesFor, type Pt, type Track } from './spots';
 
 const square: Pt[] = [
   [0.2, 0.2],
@@ -163,5 +163,52 @@ describe('appearance memory', () => {
     const t = override(newTrack(), 'occupied', 5, now, 3);
     expect(t).toMatchObject({ state: 'occupied', since: 5, streak: 3 });
     expect(t.occRef).toBe(now);
+  });
+});
+
+describe('tiling', () => {
+  it('covers a wide strip with square, overlapping tiles', () => {
+    const roi = { x: 0, y: 400, w: 3000, h: 1000 };
+    const t = tilesFor(roi);
+    expect(t.length).toBeGreaterThan(1);
+    expect(t.length).toBeLessThanOrEqual(6);
+    for (const r of t) {
+      expect(r.w).toBe(r.h);
+      expect(r.x).toBeGreaterThanOrEqual(0);
+      expect(r.x + r.w).toBeLessThanOrEqual(3000);
+      expect(r.y).toBeGreaterThanOrEqual(400);
+      expect(r.y + r.h).toBeLessThanOrEqual(1400);
+    }
+    expect(Math.min(...t.map((r) => r.x))).toBe(0);
+    expect(Math.max(...t.map((r) => r.x + r.w))).toBe(3000);
+  });
+
+  it('uses one tile for a small square region', () => {
+    expect(tilesFor({ x: 10, y: 10, w: 100, h: 100 }, 6, 1)).toEqual([{ x: 10, y: 10, w: 100, h: 100 }]);
+  });
+
+  it('merges a car seen by two tiles, keeps neighbours apart', () => {
+    const car = (x: number, w: number, score: number) => ({ x, y: 0.5, w, h: 0.1, score, label: 'car' });
+    const merged = mergeBoxes([car(0.1, 0.2, 0.8), car(0.1, 0.12, 0.5), car(0.35, 0.2, 0.7)]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({ x: 0.1, score: 0.8 });
+    expect(merged[0].w).toBeCloseTo(0.2);
+  });
+});
+
+describe('splitQuad', () => {
+  it('splits a strip into equal spaces along its long side', () => {
+    const strip: Pt[] = [
+      [0.1, 0.5],
+      [0.9, 0.3],
+      [0.95, 0.35],
+      [0.15, 0.55],
+    ];
+    const parts = splitQuad(strip, 4);
+    expect(parts).toHaveLength(4);
+    expect(parts[0][0]).toEqual([0.1, 0.5]);
+    expect(parts[3][1][0]).toBeCloseTo(0.9);
+    expect(parts[1][0][0]).toBeCloseTo(0.3);
+    expect(splitQuad(strip, 1)).toEqual([strip]);
   });
 });

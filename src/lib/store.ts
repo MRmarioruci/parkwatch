@@ -39,7 +39,7 @@ const DEFAULTS: Settings = {
   server: 'https://ntfy.sh',
   topic: '',
   interval: 15,
-  minScore: 0.3,
+  minScore: 0.25,
   occ: 0.3,
   confirm: 3,
   cooldown: 10,
