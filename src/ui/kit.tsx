@@ -9,7 +9,7 @@ export function Tx({ style, ...p }: TextProps) {
   return <Text {...p} style={[{ color: C.text, fontFamily: F.regular, fontSize: 15 }, style]} />;
 }
 
-type IconName = 'camera' | 'plus' | 'undo' | 'moon' | 'trash' | 'gear' | 'back' | 'lock' | 'eye' | 'target' | 'minus' | 'list' | 'sparkle';
+type IconName = 'camera' | 'plus' | 'undo' | 'moon' | 'trash' | 'gear' | 'back' | 'lock' | 'eye' | 'target' | 'minus' | 'list' | 'sparkle' | 'shrink' | 'expand' | 'stop' | 'play' | 'check';
 
 export function Icon({ name, size = 20, color = C.text, stroke = 2 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { stroke: color, strokeWidth: stroke, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
@@ -23,6 +23,11 @@ export function Icon({ name, size = 20, color = C.text, stroke = 2 }: { name: Ic
       )}
       {name === 'plus' && <Path {...p} d="M12 5v14M5 12h14" />}
       {name === 'minus' && <Path {...p} d="M5 12h14" />}
+      {name === 'shrink' && <Path {...p} d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7" />}
+      {name === 'expand' && <Path {...p} d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />}
+      {name === 'stop' && <Rect {...p} x={6} y={6} width={12} height={12} rx={2} />}
+      {name === 'play' && <Path {...p} d="M7 5l12 7-12 7z" />}
+      {name === 'check' && <Path {...p} d="M5 12l5 5 9-10" />}
       {name === 'list' && <Path {...p} d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />}
       {name === 'sparkle' && <Path {...p} d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />}
       {name === 'undo' && (

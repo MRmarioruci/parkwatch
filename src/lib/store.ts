@@ -29,6 +29,8 @@ export type Settings = {
   showPreview: boolean;
   /** Draw detected vehicles on the preview. */
   showBoxes: boolean;
+  /** Camera fills the screen (edges cropped) instead of showing the whole frame. */
+  camFill: boolean;
   /** Remember how each spot looks, to keep counting cars the detector loses behind branches. */
   memory: boolean;
   /** How alike (0..1) the spot must look to count as unchanged. */
@@ -58,6 +60,7 @@ const DEFAULTS: Settings = {
   notifyTaken: false,
   showPreview: true,
   showBoxes: true,
+  camFill: true,
   memory: true,
   lookSame: 0.75,
   useAI: true,

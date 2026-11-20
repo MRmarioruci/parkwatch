@@ -7,13 +7,12 @@ import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, TextInp
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Polygon, Rect, Stop } from 'react-native-svg';
 
-import { AI_MODELS } from '@/lib/ai';
 import { useApiKey } from '@/lib/secrets';
 import { since, splitQuad, type Box, type Pt, type Spot, type Track } from '@/lib/spots';
 import { getSettings, updateSettings, usageToday, useSettings } from '@/lib/store';
 import { useWatcher } from '@/lib/watcher';
 import { Btn, Icon, Tx } from '@/ui/kit';
-import { C, F, GUTTER, R, RGB } from '@/ui/theme';
+import { C, F, GUTTER, RGB } from '@/ui/theme';
 
 type Mode = 'idle' | 'drawing';
 
@@ -53,11 +52,15 @@ function Watch() {
   const ai = settings.useAI && !!apiKey;
   const usage = usageToday(settings);
 
-  // The whole 4:3 frame, as large as the screen allows, centred. Everything else floats on top.
-  const camW = Math.min(W, (H * 3) / 4);
-  const camH = (camW * 4) / 3;
+  // The camera fills the screen: its 4:3 frame is scaled to cover it and centred, overflowing
+  // the edges. Spots live in frame coordinates, so the overlay uses the same box. "Fit" shows
+  // the whole frame instead, for marking spaces near the left or right edge.
+  const fill = settings.camFill;
+  const scale = fill ? Math.max(W / 3, H / 4) : Math.min(W / 3, H / 4);
+  const camW = 3 * scale;
+  const camH = 4 * scale;
   const camLeft = (W - camW) / 2;
-  const camTop = Math.max(0, (H - camH) / 2);
+  const camTop = (H - camH) / 2;
 
   // Controls fade out while watching and come back on touch.
   const autoHide = w.watching && !sheet && !drawing && !blackout;
@@ -126,34 +129,21 @@ function Watch() {
     if (msg) setToast(msg);
   }
 
-  // ---------- hero text ----------
-  let eyebrow = 'Blue zone';
-  let big = 'Not watching';
-  let sub = 'Mark the parking spaces you care about, then start watching.';
-  if (known) {
-    eyebrow = 'Right now';
-    sub = w.lastCheck ? `Checked ${since(w.lastCheck, now) === '<1 min' ? 'just now' : `${since(w.lastCheck, now)} ago`} · ${ai ? 'Claude' : 'on the phone'}` : '';
-  } else if (w.watching) {
-    big = 'Looking…';
-    sub = ai ? `Asking ${AI_MODELS[settings.aiModel]?.label ?? 'Claude'} every ${settings.aiInterval}s` : `Confirming each spot over ${settings.confirm} checks`;
-  } else if (drawing) {
-    big = 'Mark a spot';
-    sub = draft.length < 3 ? `Tap the corners of a parking space · ${draft.length}/3` : `${draft.length} corners · Save, or keep adding`;
-  } else if (!spots.length) {
-    big = 'Mark a spot';
-    sub = 'Tap “Add spot”, then tap the corners of a parking space.';
-  } else {
-    big = 'Ready';
-    sub = `${spots.length} space${spots.length > 1 ? 's' : ''} · ${ai ? 'checked by Claude' : 'checked on the phone'}`;
-  }
+  // ---------- what the floating guide says ----------
+  let guide: string | null = null;
+  if (drawing) guide = draft.length < 3 ? `Tap the corners of one space · ${draft.length}/3` : `${draft.length} corners · save, or keep tapping`;
+  else if (w.watching && !known) guide = ai ? 'Asking Claude…' : `Looking · confirming over ${settings.confirm} checks`;
+  else if (!w.watching && !spots.length && camReady) guide = 'Tap + to mark a parking space';
 
-  const status = w.watching ? { text: ai ? 'Watching · AI' : 'Watching', color: C.free } : camReady ? { text: 'Ready', color: C.faint } : { text: 'Starting', color: C.wait };
+  const freeNames = spots.filter((sp) => w.tracks[sp.id]?.state === 'free').slice(0, 2).map((sp) => sp.name).join(', ');
+  const checked = w.lastCheck ? (since(w.lastCheck, now) === '<1 min' ? 'just now' : `${since(w.lastCheck, now)} ago`) : '';
+  const status = w.watching ? { text: ai ? 'Live · AI' : 'Live', color: C.free } : camReady ? { text: spots.length ? `${spots.length} space${spots.length > 1 ? 's' : ''}` : 'Ready', color: C.faint } : { text: 'Starting', color: C.wait };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
+    <View style={{ flex: 1, backgroundColor: '#000', overflow: 'hidden' }}>
       <StatusBar style="light" hidden={blackout || !shown} />
 
-      {/* camera: the whole frame, tappable */}
+      {/* camera, edge to edge */}
       <View style={{ position: 'absolute', left: camLeft, top: camTop, width: camW, height: camH }}>
         <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" ratio="4:3" animateShutter={false} onCameraReady={() => setCamReady(true)} />
         {!settings.showPreview && !drawing && <View style={[StyleSheet.absoluteFill, { backgroundColor: '#07090d' }]} />}
@@ -161,77 +151,90 @@ function Watch() {
         <Pressable style={StyleSheet.absoluteFill} onPress={onCameraTap} accessibilityLabel={drawing ? 'Tap a corner of the parking space' : 'Show or hide controls'} />
       </View>
 
-      {/* minimal status while the controls are hidden */}
-      <Animated.View pointerEvents="none" style={[st.mini, { top: insets.top + 12, opacity: fadeOut }]}>
+      {/* while the controls are hidden: one quiet pill */}
+      <Animated.View pointerEvents="none" style={[st.mini, { top: insets.top + 10, opacity: fadeOut }]}>
         <View style={[st.dot, { backgroundColor: free ? C.free : known ? C.taken : C.wait }]} />
-        <Tx style={{ fontFamily: F.semibold, fontSize: 13 }}>{known ? `${free}/${spots.length} free` : 'Looking…'}</Tx>
-        {w.checking && <ActivityIndicator size="small" color={C.mute} style={{ transform: [{ scale: 0.7 }], marginRight: -6 }} />}
+        <Tx style={{ fontFamily: F.semibold, fontSize: 13 }}>{known ? `${free} of ${spots.length} free` : 'Looking…'}</Tx>
+        {w.checking && <ActivityIndicator size="small" color={C.mute} style={{ transform: [{ scale: 0.65 }], marginRight: -6 }} />}
       </Animated.View>
 
-      {/* top: brand, status, settings, hero */}
+      {/* top */}
       <Animated.View pointerEvents={shown ? 'box-none' : 'none'} style={[st.top, { opacity: fade }]}>
-        <Scrim height={insets.top + 190} from="top" />
-        <View style={{ paddingTop: insets.top + 8, paddingHorizontal: GUTTER }} pointerEvents="box-none">
-          <View style={st.bar}>
-            <View style={st.brand}>
+        <Scrim height={insets.top + 120} from="top" />
+        <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 14, gap: 12 }} pointerEvents="box-none">
+          <View style={st.bar} pointerEvents="box-none">
+            <Glass style={st.brandPill}>
               <View style={st.logo}>
                 <Tx style={st.logoP}>P</Tx>
               </View>
-              <Tx style={{ fontFamily: F.bold, fontSize: 17, letterSpacing: -0.2 }}>ParkWatch</Tx>
-            </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Glass style={st.chip}>
-                <View style={[st.dot, { backgroundColor: status.color }]} />
-                <Tx style={{ fontSize: 12.5, fontFamily: F.medium }}>{status.text}</Tx>
-                {w.checking && <ActivityIndicator size="small" color={C.mute} style={{ transform: [{ scale: 0.7 }], marginRight: -6 }} />}
+              <Tx style={{ fontFamily: F.semibold, fontSize: 15, letterSpacing: -0.2 }}>ParkWatch</Tx>
+            </Glass>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }} pointerEvents="box-none">
+              <Glass style={st.pill}>
+                <View style={[st.dot, { backgroundColor: status.color }, w.watching && st.dotLive]} />
+                <Tx style={{ fontSize: 13, fontFamily: F.medium }}>{status.text}</Tx>
+                {w.checking && <ActivityIndicator size="small" color={C.mute} style={{ transform: [{ scale: 0.65 }], marginRight: -6 }} />}
               </Glass>
-              <Pressable accessibilityLabel="Settings" hitSlop={8} onPress={() => router.push('/settings')} disabled={drawing}>
+              <Pressable accessibilityLabel={fill ? 'Show the whole frame' : 'Fill the screen'} hitSlop={6} onPress={() => updateSettings({ camFill: !fill })}>
                 <Glass style={st.round}>
-                  <Icon name="gear" size={19} color={drawing ? C.faint : C.text} />
+                  <Icon name={fill ? 'shrink' : 'expand'} size={17} color={C.text} />
+                </Glass>
+              </Pressable>
+              <Pressable accessibilityLabel="Settings" hitSlop={6} onPress={() => router.push('/settings')} disabled={drawing}>
+                <Glass style={st.round}>
+                  <Icon name="gear" size={18} color={drawing ? C.faint : C.text} />
                 </Glass>
               </Pressable>
             </View>
           </View>
-          <View style={{ marginTop: 14 }} pointerEvents="none">
-            <Tx style={st.eyebrow}>{eyebrow}</Tx>
-            {known ? (
-              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+
+          {known && (
+            <Glass style={st.count}>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
                 <Tx style={[st.num, { color: free ? C.free : C.text }]}>{free}</Tx>
-                <Tx style={st.of}>/ {spots.length}</Tx>
-                <Tx style={{ fontSize: 15, color: C.mute }}>{free === 1 ? 'space free' : 'spaces free'}</Tx>
+                <Tx style={st.of}>/{spots.length}</Tx>
               </View>
-            ) : (
-              <Tx style={st.bigIdle}>{big}</Tx>
-            )}
-            <Tx style={st.sub}>{sub}</Tx>
-          </View>
+              <View>
+                <Tx style={{ fontFamily: F.semibold, fontSize: 14 }}>{free === 1 ? 'space free' : 'spaces free'}</Tx>
+                <Tx style={{ fontSize: 12, color: '#b4bcc9' }}>{[freeNames, checked && `checked ${checked}`].filter(Boolean).join(' · ')}</Tx>
+              </View>
+            </Glass>
+          )}
+
+          {guide && (
+            <View style={{ alignItems: 'center' }} pointerEvents="none">
+              <Glass style={st.guide}>
+                <Tx style={{ fontFamily: F.medium, fontSize: 13.5 }}>{guide}</Tx>
+              </Glass>
+            </View>
+          )}
         </View>
       </Animated.View>
 
-      {/* bottom: spot chips, parts picker, actions */}
+      {/* bottom */}
       <Animated.View pointerEvents={shown ? 'box-none' : 'none'} style={[st.bottom, { opacity: fade }]}>
-        <Scrim height={insets.bottom + 210} from="bottom" />
-        <View style={{ paddingBottom: insets.bottom + 14, gap: 12 }} pointerEvents="box-none">
+        <Scrim height={insets.bottom + 170} from="bottom" />
+        <View style={{ paddingBottom: insets.bottom + 12, gap: 10 }} pointerEvents="box-none">
           {drawing && draft.length === 4 && (
-            <Glass style={[st.partsBar, { marginHorizontal: GUTTER }]}>
+            <Glass style={[st.partsBar, { marginHorizontal: 14 }]}>
               <View style={{ flex: 1 }}>
                 <Tx style={{ fontFamily: F.semibold, fontSize: 14 }}>Cars that fit here</Tx>
                 <Tx style={{ fontSize: 12, color: C.mute }}>{parts > 1 ? `Saved as ${parts} separate spaces` : 'A strip of several? Add more.'}</Tx>
               </View>
               <View style={st.stepper}>
                 <Pressable accessibilityLabel="Fewer spaces" onPress={() => setParts((n) => Math.max(1, n - 1))} hitSlop={4} style={st.stepBtn}>
-                  <Icon name="minus" size={16} color={C.mute} />
+                  <Icon name="minus" size={16} color={C.text} />
                 </Pressable>
-                <Tx style={{ minWidth: 28, textAlign: 'center', fontFamily: F.display, fontSize: 18 }}>{parts}</Tx>
+                <Tx style={{ minWidth: 26, textAlign: 'center', fontFamily: F.display, fontSize: 18 }}>{parts}</Tx>
                 <Pressable accessibilityLabel="More spaces" onPress={() => setParts((n) => Math.min(8, n + 1))} hitSlop={4} style={st.stepBtn}>
-                  <Icon name="plus" size={16} color={C.mute} />
+                  <Icon name="plus" size={16} color={C.text} />
                 </Pressable>
               </View>
             </Glass>
           )}
 
           {!drawing && spots.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: GUTTER, gap: 8 }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 14, gap: 8 }}>
               {spots.map((spot) => {
                 const state = w.watching ? (w.tracks[spot.id]?.state ?? 'unknown') : 'idle';
                 return (
@@ -244,7 +247,7 @@ function Watch() {
                   >
                     <Glass style={st.spotChip}>
                       <View style={[st.dot, { width: 8, height: 8, backgroundColor: `rgb(${RGB[state]})` }]} />
-                      <Tx style={{ fontFamily: F.semibold, fontSize: 13.5 }}>{spot.name}</Tx>
+                      <Tx style={{ fontFamily: F.semibold, fontSize: 13 }}>{spot.name}</Tx>
                       {w.watching && <Tx style={{ fontSize: 12.5, color: C.mute }}>{{ free: 'free', occupied: 'taken', unknown: '…', idle: '' }[state]}</Tx>}
                     </Glass>
                   </Pressable>
@@ -253,32 +256,34 @@ function Watch() {
             </ScrollView>
           )}
 
-          <View style={st.dock}>
+          <Glass style={st.dock}>
             {drawing ? (
               <>
-                <Btn icon="undo" onPress={() => setDraft((d) => d.slice(0, -1))} disabled={!draft.length} />
-                <Btn
-                  title="Cancel"
+                <DockBtn icon="undo" label="Undo" onPress={() => setDraft((d) => d.slice(0, -1))} disabled={!draft.length} />
+                <DockBtn
+                  label="Cancel"
+                  wide
                   onPress={() => {
                     setDraft([]);
                     setParts(1);
                     setMode('idle');
                   }}
                 />
-                <Btn title={split ? `Save ${parts}` : 'Save spot'} kind="ok" onPress={saveSpot} disabled={draft.length < 3} />
+                <DockBtn icon="check" label={split ? `Save ${parts}` : 'Save'} kind="ok" wide onPress={saveSpot} disabled={draft.length < 3} />
               </>
             ) : w.watching ? (
               <>
-                <Btn icon="list" onPress={() => setSheet(true)} />
-                <Btn title="Stop watching" kind="stop" onPress={w.stop} />
-                <Btn icon="moon" onPress={() => setBlackout(true)} />
+                <DockBtn icon="list" label="Spaces" onPress={() => setSheet(true)} />
+                <DockBtn icon="stop" label="Stop watching" kind="stop" wide onPress={w.stop} />
+                <DockBtn icon="moon" label="Dim screen" onPress={() => setBlackout(true)} />
               </>
             ) : (
               <>
-                <Btn icon="list" onPress={() => setSheet(true)} disabled={!spots.length} />
-                <Btn
-                  title="Add spot"
+                <DockBtn icon="list" label="Spaces" onPress={() => setSheet(true)} disabled={!spots.length} />
+                <DockBtn icon="play" label="Start watching" kind="primary" wide onPress={startWatching} disabled={!spots.length || !camReady} />
+                <DockBtn
                   icon="plus"
+                  label="Add spot"
                   onPress={() => {
                     w.clearBoxes();
                     setDraft([]);
@@ -288,10 +293,9 @@ function Watch() {
                   }}
                   disabled={!camReady}
                 />
-                <Btn title="Start" kind="primary" onPress={startWatching} disabled={!spots.length || !camReady} />
               </>
             )}
-          </View>
+          </Glass>
         </View>
       </Animated.View>
 
@@ -355,7 +359,7 @@ function Watch() {
       )}
 
       {toast && (
-        <View style={[st.toast, { bottom: insets.bottom + 150 }]} pointerEvents="none">
+        <View style={[st.toast, { bottom: insets.bottom + 180 }]} pointerEvents="none">
           <Tx style={{ color: C.bg, fontFamily: F.semibold, fontSize: 14, textAlign: 'center' }}>{toast}</Tx>
         </View>
       )}
@@ -373,6 +377,29 @@ function Watch() {
 /** Dark translucent surface for controls floating over the camera. */
 function Glass({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[st.glass, style]}>{children}</View>;
+}
+
+type DockKind = 'plain' | 'primary' | 'stop' | 'ok';
+
+/** A button in the floating dock: square with an icon, or wide with icon and label. */
+function DockBtn({ label, icon, kind = 'plain', wide, disabled, onPress }: { label: string; icon?: Parameters<typeof Icon>[0]['name']; kind?: DockKind; wide?: boolean; disabled?: boolean; onPress: () => void }) {
+  const bg = disabled ? 'rgba(255,255,255,0.04)' : { plain: 'rgba(255,255,255,0.08)', primary: C.blue, stop: 'rgba(248,113,113,0.16)', ok: C.free }[kind];
+  const fg = disabled ? C.faint : { plain: C.text, primary: '#fff', stop: '#fca5a5', ok: '#05261a' }[kind];
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={() => {
+        Haptics.selectionAsync().catch(() => {});
+        onPress();
+      }}
+      style={({ pressed }) => [st.dockBtn, wide ? { flex: 1, paddingHorizontal: 18 } : { width: 56 }, { backgroundColor: bg, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
+    >
+      {icon && <Icon name={icon} size={19} color={fg} stroke={2.2} />}
+      {wide && <Tx style={{ color: fg, fontFamily: F.semibold, fontSize: 15.5 }}>{label}</Tx>}
+    </Pressable>
+  );
 }
 
 /** Soft gradient behind the floating controls so they read over any picture. */
@@ -455,7 +482,6 @@ function Overlay({ w, h, spots, tracks, watching, boxes, draft, parts }: { w: nu
 function SpotRow({ spot, first, track, watching, occ, now, ai, onCorrect }: { spot: Spot; first: boolean; track?: Track; watching: boolean; occ: number; now: number; ai: boolean; onCorrect: (state: 'free' | 'occupied') => void }) {
   const [name, setName] = useState(spot.name);
   const state = watching ? (track?.state ?? 'unknown') : 'idle';
-  const rail = { free: C.free, occupied: C.taken, unknown: C.wait, idle: C.surface2 }[state];
   const label = { free: 'Free', occupied: 'Taken', unknown: 'Checking', idle: 'Idle' }[state];
   const color = { free: C.free, occupied: C.taken, unknown: C.wait, idle: C.faint }[state];
   const ratio = track?.ratio ?? 0;
@@ -468,32 +494,32 @@ function SpotRow({ spot, first, track, watching, occ, now, ai, onCorrect }: { sp
 
   return (
     <View style={[st.spot, !first && { borderTopWidth: 1, borderTopColor: C.hair }]}>
-      <View style={[st.rail, { backgroundColor: rail }]} />
       <View style={{ flex: 1 }}>
-        <TextInput value={name} onChangeText={setName} onEndEditing={commit} onSubmitEditing={commit} style={st.name} selectionColor={C.blue} returnKeyType="done" />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 }}>
-          <Tx style={{ fontSize: 12, fontFamily: F.bold, letterSpacing: 0.5, textTransform: 'uppercase', color }}>{label}</Tx>
-          {watching && !ai && (
-            <View style={st.meter}>
-              <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.round(ratio * 100)}%`, backgroundColor: ratio >= occ ? C.taken : C.free, borderRadius: 4 }} />
-              <View style={{ position: 'absolute', top: -2, bottom: -2, width: 2, left: `${Math.round(occ * 100)}%`, backgroundColor: 'rgba(255,255,255,0.35)' }} />
-            </View>
-          )}
-          {watching && track?.since ? <Tx style={{ fontSize: 12.5, color: C.mute }}>for {since(track.since, now)}</Tx> : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <View style={[st.dot, { width: 8, height: 8, backgroundColor: color }]} />
+          <TextInput value={name} onChangeText={setName} onEndEditing={commit} onSubmitEditing={commit} style={st.name} selectionColor={C.blue} returnKeyType="done" />
+          <Tx style={{ fontSize: 12.5, fontFamily: F.semibold, color }}>{label}</Tx>
+          {watching && track?.since ? <Tx style={{ fontSize: 12.5, color: C.mute }}>· {since(track.since, now)}</Tx> : null}
         </View>
+        {watching && !ai && (
+          <View style={[st.meter, { marginLeft: 16, marginTop: 8 }]}>
+            <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.round(ratio * 100)}%`, backgroundColor: ratio >= occ ? C.taken : C.free, borderRadius: 4 }} />
+            <View style={{ position: 'absolute', top: -2, bottom: -2, width: 2, left: `${Math.round(occ * 100)}%`, backgroundColor: 'rgba(255,255,255,0.35)' }} />
+          </View>
+        )}
         {track?.reason ? (
-          <Tx style={{ fontSize: 12.5, color: C.mute, marginTop: 3 }} numberOfLines={2}>
-            Claude: {track.reason}
+          <Tx style={st.reason} numberOfLines={2}>
+            {track.reason}
           </Tx>
         ) : watching && track?.byLook ? (
-          <Tx style={{ fontSize: 12, color: C.faint, marginTop: 3 }}>
+          <Tx style={st.reason}>
             {track.state === 'occupied' && track.ratio < occ ? 'Car hidden, spot looks unchanged' : 'Spot looks different'} · {Math.round((track.sim ?? 0) * 100)}% alike
           </Tx>
         ) : null}
       </View>
       {watching && (state === 'free' || state === 'occupied') && (
         <Pressable onPress={() => onCorrect(state === 'free' ? 'occupied' : 'free')} hitSlop={6} style={st.fixBtn}>
-          <Tx style={{ fontSize: 12.5, fontFamily: F.semibold, color: C.mute }}>{state === 'free' ? 'It’s taken' : 'It’s free'}</Tx>
+          <Tx style={{ fontSize: 12.5, fontFamily: F.semibold, color: '#c9ced8' }}>{state === 'free' ? 'It’s taken' : 'It’s free'}</Tx>
         </Pressable>
       )}
       {!watching && (
@@ -521,43 +547,47 @@ function AskCamera({ canAsk, onAsk }: { canAsk: boolean; onAsk: () => void }) {
   );
 }
 
+// Floating glass: dark and see-through, hairline edge, fully rounded.
+const GLASS = 'rgba(14,16,22,0.58)';
+
 const st = StyleSheet.create({
   top: { position: 'absolute', left: 0, right: 0, top: 0 },
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   bar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  logo: { width: 32, height: 32, borderRadius: 9, backgroundColor: C.blue, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.9)' },
-  logoP: { fontFamily: F.display, fontSize: 17, color: '#fff', lineHeight: 21 },
-  glass: { backgroundColor: 'rgba(18,21,28,0.72)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, height: 34, borderRadius: 17 },
-  round: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  mini: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, height: 32, borderRadius: 16, backgroundColor: 'rgba(10,12,17,0.6)' },
-  dot: { width: 7, height: 7, borderRadius: 4 },
-  eyebrow: { fontSize: 11.5, fontFamily: F.semibold, letterSpacing: 1, textTransform: 'uppercase', color: 'rgba(238,241,246,0.7)' },
-  num: { fontFamily: F.display, fontSize: 52, lineHeight: 58, letterSpacing: -2 },
-  of: { fontFamily: F.displayMedium, fontSize: 22, color: 'rgba(238,241,246,0.55)' },
-  bigIdle: { fontFamily: F.display, fontSize: 30, lineHeight: 38, letterSpacing: -0.8, marginTop: 2 },
-  sub: { color: 'rgba(238,241,246,0.75)', fontSize: 13.5, marginTop: 4 },
+  glass: { backgroundColor: GLASS, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
+  brandPill: { flexDirection: 'row', alignItems: 'center', gap: 9, height: 40, paddingLeft: 6, paddingRight: 14, borderRadius: 20 },
+  logo: { width: 28, height: 28, borderRadius: 8, backgroundColor: C.blue, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.9)' },
+  logoP: { fontFamily: F.display, fontSize: 15, color: '#fff', lineHeight: 19 },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 40, paddingHorizontal: 14, borderRadius: 20 },
+  round: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  mini: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, height: 34, borderRadius: 17, backgroundColor: 'rgba(10,12,17,0.55)' },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  dotLive: { shadowColor: C.free, shadowOpacity: 0.9, shadowRadius: 6, elevation: 3 },
+  count: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 10, paddingLeft: 16, paddingRight: 18, borderRadius: 22 },
+  num: { fontFamily: F.display, fontSize: 44, lineHeight: 48, letterSpacing: -1.5 },
+  of: { fontFamily: F.displayMedium, fontSize: 20, color: 'rgba(238,241,246,0.55)' },
+  guide: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 36, paddingHorizontal: 16, borderRadius: 18 },
   spotPill: { position: 'absolute', width: 120, alignItems: 'center' },
-  spotPillInner: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 24, borderRadius: 12, backgroundColor: 'rgba(10,12,17,0.72)', maxWidth: 120 },
-  spotChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 13, height: 38, borderRadius: 19 },
-  partsBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, paddingLeft: 16, borderRadius: R },
-  stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
-  stepBtn: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  dock: { flexDirection: 'row', gap: 10, paddingHorizontal: GUTTER },
-  sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: C.bg, borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: C.hair, paddingHorizontal: GUTTER },
-  handle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: C.surface2, marginTop: 10 },
+  spotPillInner: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 26, borderRadius: 13, backgroundColor: 'rgba(10,12,17,0.72)', maxWidth: 120 },
+  spotChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, height: 38, borderRadius: 19 },
+  partsBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, paddingLeft: 18, borderRadius: 24 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 16, padding: 4 },
+  stepBtn: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  dock: { flexDirection: 'row', gap: 8, padding: 8, marginHorizontal: 14, borderRadius: 30 },
+  dockBtn: { height: 56, borderRadius: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  sheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#0b0d12', borderTopLeftRadius: 28, borderTopRightRadius: 28, borderTopWidth: 1, borderColor: 'rgba(255,255,255,0.08)', paddingHorizontal: GUTTER },
+  handle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: '#262b36', marginTop: 10 },
   sheetHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', marginVertical: 14 },
-  sheetLabel: { fontSize: 12.5, fontFamily: F.semibold, letterSpacing: 1, textTransform: 'uppercase', color: C.mute, marginTop: 22, marginBottom: 10, marginLeft: 4 },
-  panel: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.hair, borderRadius: R, overflow: 'hidden' },
-  spot: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 14, paddingRight: 8 },
-  rail: { width: 4, alignSelf: 'stretch', borderTopRightRadius: 4, borderBottomRightRadius: 4 },
-  name: { color: C.text, fontFamily: F.semibold, fontSize: 15.5, padding: 0 },
-  meter: { flex: 1, maxWidth: 110, height: 4, borderRadius: 4, backgroundColor: C.surface2 },
-  fixBtn: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, backgroundColor: C.surface2, marginRight: 6 },
+  sheetLabel: { fontSize: 12, fontFamily: F.semibold, letterSpacing: 1, textTransform: 'uppercase', color: C.mute, marginTop: 22, marginBottom: 10, marginLeft: 4 },
+  panel: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.hair, borderRadius: 20, overflow: 'hidden' },
+  spot: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingLeft: 16, paddingRight: 12 },
+  name: { color: C.text, fontFamily: F.semibold, fontSize: 15.5, padding: 0, minWidth: 40 },
+  reason: { fontSize: 12.5, color: '#b4bcc9', marginTop: 5, marginLeft: 16 },
+  meter: { width: 110, height: 4, borderRadius: 4, backgroundColor: C.surface2 },
+  fixBtn: { paddingHorizontal: 12, height: 34, justifyContent: 'center', borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.07)' },
   iconBtn: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  testRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, padding: 14, borderRadius: R, backgroundColor: C.blueSoft },
+  testRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, padding: 14, borderRadius: 20, backgroundColor: C.blueSoft },
   logTime: { fontSize: 12, color: C.faint, fontFamily: F.medium, width: 42 },
-  toast: { position: 'absolute', alignSelf: 'center', maxWidth: '88%', backgroundColor: C.text, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12 },
+  toast: { position: 'absolute', alignSelf: 'center', maxWidth: '88%', backgroundColor: C.text, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
   blackout: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', gap: 10 },
 });
