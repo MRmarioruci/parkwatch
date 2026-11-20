@@ -2,6 +2,7 @@
 // model's 300×300 input, decoded to RGB bytes and run through SSD MobileNet (COCO, TFLite).
 // Every intermediate file is deleted straight away; nothing leaves the phone.
 
+import { Asset } from 'expo-asset';
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as jpeg from 'jpeg-js';
@@ -15,8 +16,14 @@ let model: Promise<TfliteModel> | null = null;
 
 export function loadDetector(): Promise<TfliteModel> {
   if (!model) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- Metro bundles the model asset
-    model = loadTensorflowModel(require('../../assets/models/ssd_mobilenet_v1_coco_quant.tflite'), []).catch((e) => {
+    model = (async () => {
+      // In a release build the bundled model is an Android resource name, not a URL, which the
+      // TFLite loader can't open. expo-asset copies it to a local file first; use that path.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- Metro bundles the model asset
+      const asset = await Asset.fromModule(require('../../assets/models/ssd_mobilenet_v1_coco_quant.tflite')).downloadAsync();
+      const uri = asset.localUri ?? asset.uri;
+      return loadTensorflowModel({ url: uri.includes('://') ? uri : `file://${uri}` }, []);
+    })().catch((e) => {
       model = null; // allow a retry
       throw e;
     });

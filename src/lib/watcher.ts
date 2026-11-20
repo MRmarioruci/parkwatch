@@ -12,6 +12,9 @@ import { getSettings } from './store';
 
 const KEEP_AWAKE = 'parkwatch-watch';
 
+// Native errors can carry a whole Java stack trace; the first line is the useful part.
+const firstLine = (e: unknown) => String((e as Error)?.message ?? e).split('\n')[0].slice(0, 200);
+
 export type LogLine = { at: number; text: string };
 
 export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) {
@@ -74,7 +77,7 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
       setBoxes(found);
       setLastCheck(now);
     } catch (e) {
-      note(`Check failed: ${(e as Error).message}`);
+      note(`Check failed: ${firstLine(e)}`);
     } finally {
       busy.current = false;
       setChecking(false);
@@ -131,7 +134,7 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
       note(`Test: ${found.length} vehicle${found.length === 1 ? '' : 's'} seen`);
       return found;
     } catch (e) {
-      note(`Test failed: ${(e as Error).message}`);
+      note(`Test failed: ${firstLine(e)}`);
     } finally {
       busy.current = false;
       setChecking(false);
