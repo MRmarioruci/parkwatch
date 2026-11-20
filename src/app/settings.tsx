@@ -105,6 +105,14 @@ export default function SettingsScreen() {
           <Row label="Min. confidence" hint="Lower finds more cars, and more mistakes">
             <Stepper value={Math.round(st.minScore * 100)} min={20} max={90} step={5} format={(v) => `${v}%`} onChange={(v) => updateSettings({ minScore: v / 100 })} />
           </Row>
+          <Row label="Remember how spots look" hint="Keeps a car counted when branches or traffic hide it from the detector">
+            <Toggle value={st.memory} onChange={(v) => updateSettings({ memory: v })} />
+          </Row>
+          {st.memory && (
+            <Row label="Counts as unchanged at" hint="Higher notices smaller changes; lower ignores more swaying">
+              <Stepper value={Math.round(st.lookSame * 100)} min={55} max={95} step={5} format={(v) => `${v}% alike`} onChange={(v) => updateSettings({ lookSame: v / 100 })} />
+            </Row>
+          )}
           <Row label="Show detected vehicles">
             <Toggle value={st.showBoxes} onChange={(v) => updateSettings({ showBoxes: v })} />
           </Row>
@@ -140,6 +148,7 @@ export default function SettingsScreen() {
             'Mount the phone looking down at the street, plugged in.',
             'Use “Test detection” after marking spots: the blue corners should sit on the cars.',
             'Keep the app open. Use the moon button to black the screen; watching continues.',
+            'If a spot shows the wrong state while watching, tap “It’s taken” / “It’s free”. It learns how the spot looks from that.',
             'Detection gets weaker in the dark.',
           ].map((t) => (
             <View key={t} style={{ flexDirection: 'row', gap: 10 }}>

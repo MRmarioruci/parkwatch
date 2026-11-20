@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canAlert, coverage, inPoly, inQuietHours, newTrack, parseDetections, regionOfInterest, samplePoints, step, type Pt } from './spots';
+import { canAlert, coverage, extractPatch, inPoly, inQuietHours, MEMORY_DEFAULTS, newTrack, override, parseDetections, regionOfInterest, samplePoints, similarity, step, type Pt, type Track } from './spots';
 
 const square: Pt[] = [
   [0.2, 0.2],
@@ -99,5 +99,69 @@ describe('alert rules', () => {
     const t = { ...newTrack(), lastAlert: 0 };
     expect(canAlert(t, 10, 9 * 60_000)).toBe(false);
     expect(canAlert(t, 10, 10 * 60_000)).toBe(true);
+  });
+});
+
+describe('appearance memory', () => {
+  const S = 64;
+  const frame = { x: 0, y: 0, w: 1, h: 1 };
+  // A synthetic grayscale scene: a road gradient, optionally with a "car" (bright block) and "branches" (dark lines).
+  function scene({ car = false, branches = 0, light = 1 } = {}) {
+    const rgb = new Uint8Array(S * S * 3);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        let v = 90 + x * 0.8 + ((x * 7 + y * 13) % 11);
+        if (car && x > 14 && x < 38 && y > 15 && y < 37) v = y > 20 && y < 25 ? 30 : 210 - (x - 14) * 3; // body, dark windscreen
+        for (let b = 0; b < branches; b++) if (Math.abs(x - (8 + b * 9) - Math.round(y / 4)) < 1) v = 40;
+        const g = Math.min(255, v * light);
+        rgb.set([g, g, g], (y * S + x) * 3);
+      }
+    }
+    return rgb;
+  }
+  const patch = (o: Parameters<typeof scene>[0]) => extractPatch(scene(o), S, frame, square)!;
+  const rules = { occ: 0.3, confirm: 2 };
+
+  it('sees the same spot as similar through light changes and thin branches, and a car as different', () => {
+    const car = patch({ car: true });
+    expect(similarity(car, patch({ car: true, light: 0.6 }))).toBeGreaterThan(0.98);
+    expect(similarity(car, patch({ car: true, branches: 3 }))).toBeGreaterThan(MEMORY_DEFAULTS.stillThere);
+    expect(similarity(car, patch({}))).toBeLessThan(MEMORY_DEFAULTS.changed);
+  });
+
+  it('keeps a hidden car counted until the spot actually changes', () => {
+    let t: Track = { ...newTrack(), state: 'occupied', occRef: patch({ car: true }) };
+    // branches grow in front; the detector loses the car
+    for (let i = 0; i < 4; i++) t = step(t, 0, rules, i, patch({ car: true, branches: 3 })).track;
+    expect(t.state).toBe('occupied');
+    expect(t.byLook).toBe(true);
+    // the car leaves
+    let r = step(t, 0, rules, 10, patch({ branches: 3 }));
+    r = step(r.track, 0, rules, 11, patch({ branches: 3 }));
+    expect(r.change).toEqual({ from: 'occupied', to: 'free' });
+    expect(r.track.occRef).toBeNull();
+  });
+
+  it('notices a car the detector misses arriving in a free spot', () => {
+    let t: Track = { ...newTrack(), state: 'free', freeRef: patch({ branches: 3 }) };
+    let r = step(t, 0, rules, 1, patch({ branches: 3 }));
+    expect(r.track.state).toBe('free');
+    t = r.track;
+    r = step(t, 0, rules, 2, patch({ car: true, branches: 3 }));
+    r = step(r.track, 0, rules, 3, patch({ car: true, branches: 3 }));
+    expect(r.change).toEqual({ from: 'free', to: 'occupied' });
+  });
+
+  it('can be switched off', () => {
+    let t: Track = { ...newTrack(), state: 'occupied', occRef: patch({ car: true }) };
+    for (let i = 0; i < 2; i++) t = step(t, 0, { ...rules, memory: false }, i, patch({ car: true })).track;
+    expect(t.state).toBe('free');
+  });
+
+  it('takes a manual correction as the new reference', () => {
+    const now = patch({ car: true, branches: 2 });
+    const t = override(newTrack(), 'occupied', 5, now, 3);
+    expect(t).toMatchObject({ state: 'occupied', since: 5, streak: 3 });
+    expect(t.occRef).toBe(now);
   });
 });

@@ -25,9 +25,16 @@ export type Track = {
   lastAlert: number;
   /** Share of the spot covered by vehicles at the last check (0..1). */
   ratio: number;
+  /** How the spot looked when last known taken / free (appearance memory). */
+  occRef: Patch | null;
+  freeRef: Patch | null;
+  /** Similarity to the relevant reference at the last check, for display (0..1), or null. */
+  sim: number | null;
+  /** True when the last reading came from appearance memory rather than the detector. */
+  byLook: boolean;
 };
 
-export const newTrack = (): Track => ({ state: 'unknown', cand: null, streak: 0, since: null, lastAlert: 0, ratio: 0 });
+export const newTrack = (): Track => ({ state: 'unknown', cand: null, streak: 0, since: null, lastAlert: 0, ratio: 0, occRef: null, freeRef: null, sim: null, byLook: false });
 
 export function inPoly(x: number, y: number, pts: Pt[]): boolean {
   let inside = false;
@@ -94,7 +101,7 @@ export function regionOfInterest(spots: { pts: Pt[] }[], margin = 0.12): Rect {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
-// SSD MobileNet (COCO) class ids, 0-based.
+// COCO class ids, 0-based (EfficientDet-Lite and SSD MobileNet use the same).
 const VEHICLES: Record<number, string> = { 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck' };
 
 /**
@@ -129,17 +136,173 @@ export function parseDetections(
   return res;
 }
 
-export type Rules = { occ: number; confirm: number };
+// ---------- appearance memory ----------
+// Detectors miss cars behind branches. A parked car doesn't vanish without the spot looking
+// different, though, so each spot also remembers how it looked when last known taken or free.
+// A small grayscale patch of the spot is compared with normalised cross-correlation, which
+// ignores overall brightness and contrast changes (clouds, dusk).
+
+export const PATCH = 24;
+
+/** Zero-mean, unit-length grayscale samples over the spot (NaN outside the polygon). */
+export type Patch = Float32Array;
+
+/**
+ * Samples the spot from an RGB image of `size`×`size` pixels that shows `crop` of the frame.
+ * Each cell averages the pixels it covers, which also smooths out thin branches swaying.
+ */
+export function extractPatch(rgb: ArrayLike<number>, size: number, crop: Rect, pts: Pt[]): Patch | null {
+  if (pts.length < 3) return null;
+  const xs = pts.map((p) => p[0]);
+  const ys = pts.map((p) => p[1]);
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const cw = (Math.max(...xs) - x0) / PATCH;
+  const ch = (Math.max(...ys) - y0) / PATCH;
+  const toPx = (v: number, o: number, len: number) => Math.min(size - 1, Math.max(0, Math.floor(((v - o) / len) * size)));
+  const out = new Float32Array(PATCH * PATCH).fill(NaN);
+  let sum = 0;
+  let n = 0;
+  for (let j = 0; j < PATCH; j++) {
+    for (let i = 0; i < PATCH; i++) {
+      const cx = x0 + (i + 0.5) * cw;
+      const cy = y0 + (j + 0.5) * ch;
+      if (!inPoly(cx, cy, pts)) continue;
+      const px0 = toPx(x0 + i * cw, crop.x, crop.w);
+      const px1 = Math.max(px0, toPx(x0 + (i + 1) * cw, crop.x, crop.w) - 1);
+      const py0 = toPx(y0 + j * ch, crop.y, crop.h);
+      const py1 = Math.max(py0, toPx(y0 + (j + 1) * ch, crop.y, crop.h) - 1);
+      // At most 6×6 samples per cell keeps this cheap on big spots.
+      const sx = Math.max(1, Math.ceil((px1 - px0 + 1) / 6));
+      const sy = Math.max(1, Math.ceil((py1 - py0 + 1) / 6));
+      let g = 0;
+      let k = 0;
+      for (let y = py0; y <= py1; y += sy) {
+        for (let x = px0; x <= px1; x += sx) {
+          const o = (y * size + x) * 3;
+          g += 0.299 * rgb[o] + 0.587 * rgb[o + 1] + 0.114 * rgb[o + 2];
+          k++;
+        }
+      }
+      const v = g / k;
+      out[j * PATCH + i] = v;
+      sum += v;
+      n++;
+    }
+  }
+  if (n < 8) return null;
+  const mean = sum / n;
+  let sq = 0;
+  for (let q = 0; q < out.length; q++) {
+    if (Number.isNaN(out[q])) continue;
+    out[q] -= mean;
+    sq += out[q] * out[q];
+  }
+  // A perfectly flat patch (e.g. a white car filling the spot at night) stays all zeros.
+  const norm = Math.sqrt(sq);
+  if (norm > 1e-3) for (let q = 0; q < out.length; q++) if (!Number.isNaN(out[q])) out[q] /= norm;
+  return out;
+}
+
+/** Normalised cross-correlation of two patches of the same spot, mapped to 0..1 (1 = identical). */
+export function similarity(a: Patch, b: Patch): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let q = 0; q < a.length; q++) {
+    const x = a[q];
+    const y = b[q];
+    if (Number.isNaN(x) || Number.isNaN(y)) continue;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na < 1e-9 && nb < 1e-9) return 1; // both flat: same
+  if (na < 1e-9 || nb < 1e-9) return 0.5; // one flat: can't tell
+  return Math.max(0, Math.min(1, (dot / Math.sqrt(na * nb) + 1) / 2));
+}
+
+export type Rules = {
+  occ: number;
+  confirm: number;
+  /** Use appearance memory. */
+  memory?: boolean;
+  /** A taken spot stays taken while it looks at least this similar to how it looked taken. */
+  stillThere?: number;
+  /** A free spot counts as taken when it looks less similar than this to how it looked free. */
+  changed?: number;
+};
+
+// Calibrated on test scenes: same spot with bare branches scores 0.84–0.93, car vs no car 0.43–0.63.
+export const MEMORY_DEFAULTS = { stillThere: 0.75, changed: 0.75 };
 
 /** One check for one spot. Returns the new track and the change, if the state flipped. */
-export function step(track: Track, ratio: number, rules: Rules, now: number): { track: Track; change: { from: SpotState; to: SpotState } | null } {
-  const reading = ratio >= rules.occ ? 'occupied' : 'free';
-  const streak = reading === track.cand ? track.streak + 1 : 1;
-  const next: Track = { ...track, ratio, cand: reading, streak };
-  if (streak >= rules.confirm && track.state !== reading) {
-    return { track: { ...next, state: reading, since: now }, change: { from: track.state, to: reading } };
+export function step(
+  track: Track,
+  ratio: number,
+  rules: Rules,
+  now: number,
+  patch: Patch | null = null,
+): { track: Track; change: { from: SpotState; to: SpotState } | null } {
+  const detected: 'free' | 'occupied' = ratio >= rules.occ ? 'occupied' : 'free';
+  let reading = detected;
+  let sim: number | null = null;
+  let byLook = false;
+  const mem = rules.memory !== false && patch != null;
+
+  if (mem && detected === 'free') {
+    const stillThere = rules.stillThere ?? MEMORY_DEFAULTS.stillThere;
+    const changed = rules.changed ?? MEMORY_DEFAULTS.changed;
+    if (track.state === 'occupied' && track.occRef) {
+      // The detector lost the car. If the spot still looks the same, the car is still there.
+      sim = similarity(track.occRef, patch);
+      if (sim >= stillThere) {
+        reading = 'occupied';
+        byLook = true;
+      }
+    } else if (track.state === 'free' && track.freeRef) {
+      // The detector sees nothing, but the spot looks very different from when it was empty.
+      sim = similarity(track.freeRef, patch);
+      if (sim < changed) {
+        reading = 'occupied';
+        byLook = true;
+      }
+    }
+  } else if (mem && detected === 'occupied' && track.occRef) {
+    sim = similarity(track.occRef, patch);
   }
-  return { track: next, change: null };
+
+  const streak = reading === track.cand ? track.streak + 1 : 1;
+  let next: Track = { ...track, ratio, cand: reading, streak, sim, byLook };
+  let change: { from: SpotState; to: SpotState } | null = null;
+  if (streak >= rules.confirm && track.state !== reading) {
+    next = { ...next, state: reading, since: now };
+    change = { from: track.state, to: reading };
+  }
+
+  // Update the memory with what the spot looks like now, but only when the reading agrees
+  // with the state, so a car arriving or leaving doesn't overwrite the reference mid-way.
+  if (mem && patch) {
+    if (next.state === 'occupied' && reading === 'occupied') next.occRef = patch;
+    if (next.state === 'free' && reading === 'free') next.freeRef = patch;
+    if (change?.to === 'free') next.occRef = null;
+  }
+  return { track: next, change };
+}
+
+/** The user corrects a spot by hand; what it looks like now becomes the reference. */
+export function override(track: Track, state: 'free' | 'occupied', now: number, patch: Patch | null, confirm: number): Track {
+  return {
+    ...track,
+    state,
+    cand: state,
+    streak: confirm,
+    since: now,
+    occRef: state === 'occupied' ? (patch ?? track.occRef) : null,
+    freeRef: state === 'free' ? (patch ?? track.freeRef) : track.freeRef,
+    sim: null,
+    byLook: false,
+  };
 }
 
 /** Quiet hours as whole hours; from === to (or null) means none. Spans midnight when from > to. */

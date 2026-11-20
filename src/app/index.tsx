@@ -182,7 +182,19 @@ function Watch() {
               <Tx style={{ color: C.mute, fontSize: 14, textAlign: 'center' }}>Tap “Add spot” below, then tap the corners of a parking space on the camera image.</Tx>
             </View>
           ) : (
-            spots.map((spot, i) => <SpotRow key={spot.id} spot={spot} first={i === 0} track={w.watching ? w.tracks[spot.id] : undefined} watching={w.watching} occ={settings.occ} now={now} />)
+            spots.map((spot, i) => <SpotRow
+                key={spot.id}
+                spot={spot}
+                first={i === 0}
+                track={w.watching ? w.tracks[spot.id] : undefined}
+                watching={w.watching}
+                occ={settings.occ}
+                now={now}
+                onCorrect={(state) => {
+                  w.mark(spot, state);
+                  setToast(`Got it: ${spot.name} is ${state === 'free' ? 'free' : 'taken'}. It will remember how it looks now.`);
+                }}
+              />)
           )}
         </Panel>
 
@@ -326,7 +338,7 @@ function Overlay({ size, spots, tracks, watching, boxes, draft }: { size: { w: n
   );
 }
 
-function SpotRow({ spot, first, track, watching, occ, now }: { spot: Spot; first: boolean; track?: Track; watching: boolean; occ: number; now: number }) {
+function SpotRow({ spot, first, track, watching, occ, now, onCorrect }: { spot: Spot; first: boolean; track?: Track; watching: boolean; occ: number; now: number; onCorrect: (state: 'free' | 'occupied') => void }) {
   const [name, setName] = useState(spot.name);
   const state = watching ? (track?.state ?? 'unknown') : 'idle';
   const rail = { free: C.free, occupied: C.taken, unknown: C.wait, idle: C.surface2 }[state];
@@ -355,7 +367,17 @@ function SpotRow({ spot, first, track, watching, occ, now }: { spot: Spot; first
           )}
           {watching && track?.since ? <Tx style={{ fontSize: 12.5, color: C.mute }}>for {since(track.since, now)}</Tx> : null}
         </View>
+        {watching && track?.byLook ? (
+          <Tx style={{ fontSize: 12, color: C.faint, marginTop: 3 }}>
+            {track.state === 'occupied' && track.cand === 'occupied' && track.ratio < occ ? 'Car hidden, spot looks unchanged' : 'Spot looks different'} · {Math.round((track.sim ?? 0) * 100)}% alike
+          </Tx>
+        ) : null}
       </View>
+      {watching && (state === 'free' || state === 'occupied') && (
+        <Pressable accessibilityLabel={state === 'free' ? `${spot.name} is actually taken` : `${spot.name} is actually free`} onPress={() => onCorrect(state === 'free' ? 'occupied' : 'free')} hitSlop={6} style={s.fixBtn}>
+          <Tx style={{ fontSize: 12.5, fontFamily: F.semibold, color: C.mute }}>{state === 'free' ? 'It’s taken' : 'It’s free'}</Tx>
+        </Pressable>
+      )}
       {!watching && (
         <Pressable
           accessibilityLabel={`Delete ${spot.name}`}
@@ -410,6 +432,7 @@ const s = StyleSheet.create({
   rail: { width: 4, alignSelf: 'stretch', borderTopRightRadius: 4, borderBottomRightRadius: 4 },
   name: { color: C.text, fontFamily: F.semibold, fontSize: 15.5, padding: 0 },
   meter: { flex: 1, maxWidth: 110, height: 4, borderRadius: 4, backgroundColor: C.surface2 },
+  fixBtn: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10, backgroundColor: C.surface2, marginRight: 6 },
   iconBtn: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   testRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10, padding: 14, borderRadius: R, backgroundColor: C.blueSoft },
   logTime: { fontSize: 12, color: C.faint, fontFamily: F.medium, width: 42 },

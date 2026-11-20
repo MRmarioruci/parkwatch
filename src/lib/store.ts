@@ -28,6 +28,10 @@ export type Settings = {
   showPreview: boolean;
   /** Draw detected vehicles on the preview. */
   showBoxes: boolean;
+  /** Remember how each spot looks, to keep counting cars the detector loses behind branches. */
+  memory: boolean;
+  /** How alike (0..1) the spot must look to count as unchanged. */
+  lookSame: number;
   spots: Spot[];
 };
 
@@ -35,7 +39,7 @@ const DEFAULTS: Settings = {
   server: 'https://ntfy.sh',
   topic: '',
   interval: 15,
-  minScore: 0.4,
+  minScore: 0.3,
   occ: 0.3,
   confirm: 3,
   cooldown: 10,
@@ -44,6 +48,8 @@ const DEFAULTS: Settings = {
   notifyTaken: false,
   showPreview: true,
   showBoxes: true,
+  memory: true,
+  lookSame: 0.75,
   spots: [],
 };
 
