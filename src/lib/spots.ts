@@ -32,9 +32,11 @@ export type Track = {
   sim: number | null;
   /** True when the last reading came from appearance memory rather than the detector. */
   byLook: boolean;
+  /** What the AI check said about this spot last time. */
+  reason: string | null;
 };
 
-export const newTrack = (): Track => ({ state: 'unknown', cand: null, streak: 0, since: null, lastAlert: 0, ratio: 0, occRef: null, freeRef: null, sim: null, byLook: false });
+export const newTrack = (): Track => ({ state: 'unknown', cand: null, streak: 0, since: null, lastAlert: 0, ratio: 0, occRef: null, freeRef: null, sim: null, byLook: false, reason: null });
 
 export function inPoly(x: number, y: number, pts: Pt[]): boolean {
   let inside = false;

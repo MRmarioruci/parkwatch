@@ -3,6 +3,7 @@
 import * as SQLite from 'expo-sqlite';
 import { useSyncExternalStore } from 'react';
 
+import type { AiModel } from './ai';
 import type { Spot } from './spots';
 
 export type Settings = {
@@ -32,6 +33,15 @@ export type Settings = {
   memory: boolean;
   /** How alike (0..1) the spot must look to count as unchanged. */
   lookSame: number;
+  /** Ask Claude to judge the spots (needs an API key) instead of the on-phone detector. */
+  useAI: boolean;
+  aiModel: AiModel;
+  /** Seconds between AI checks, checks in a row before a change, and max AI checks per day. */
+  aiInterval: number;
+  aiConfirm: number;
+  aiCap: number;
+  /** AI checks and spend for one day (local date). */
+  usage: { day: string; calls: number; cost: number };
   spots: Spot[];
 };
 
@@ -50,6 +60,12 @@ const DEFAULTS: Settings = {
   showBoxes: true,
   memory: true,
   lookSame: 0.75,
+  useAI: true,
+  aiModel: 'claude-haiku-5-5',
+  aiInterval: 60,
+  aiConfirm: 2,
+  aiCap: 600,
+  usage: { day: '', calls: 0, cost: 0 },
   spots: [],
 };
 
@@ -89,4 +105,19 @@ const subscribe = (l: () => void) => {
 
 export function useSettings(): Settings {
   return useSyncExternalStore(subscribe, getSettings);
+}
+
+export const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/** Today's AI usage (zero if the stored figures are from another day). */
+export function usageToday(s: Settings = snapshot) {
+  return s.usage.day === today() ? s.usage : { day: today(), calls: 0, cost: 0 };
+}
+
+export function recordAiCall(cost: number) {
+  const u = usageToday();
+  updateSettings({ usage: { day: u.day, calls: u.calls + 1, cost: u.cost + cost } });
 }

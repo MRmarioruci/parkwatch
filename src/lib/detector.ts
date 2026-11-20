@@ -10,6 +10,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as jpeg from 'jpeg-js';
 import { loadTensorflowModel, type TfliteModel } from 'react-native-fast-tflite';
 
+import { aiSize, annotate, toJpegBase64 } from './ai';
 import { extractPatch, mergeBoxes, parseDetections, tilesFor, type Box, type Patch, type Rect, type Spot } from './spots';
 
 const SIZE = 448;
@@ -47,16 +48,16 @@ export type Look = { boxes: Box[]; patches: Record<string, Patch | null>; tiles:
 
 type PxRect = { originX: number; originY: number; width: number; height: number };
 
-/** Crop a pixel rect out of the photo, scale it to SIZE×SIZE and decode it to RGB bytes. */
-async function rgbOf(photo: Photo, crop: PxRect, temp: string[]): Promise<Uint8Array> {
+/** Crop a pixel rect out of the photo, scale it to w×h (default the model's input) and decode it to RGB bytes. */
+async function rgbOf(photo: Photo, crop: PxRect, temp: string[], w = SIZE, h = SIZE): Promise<Uint8Array> {
   const ctx = ImageManipulator.manipulate(photo.uri);
   ctx.crop(crop);
-  ctx.resize({ width: SIZE, height: SIZE });
+  ctx.resize({ width: w, height: h });
   const img = await ctx.renderAsync();
   const out = await img.saveAsync({ format: SaveFormat.JPEG, compress: 0.92 });
   temp.push(out.uri);
   const raw = jpeg.decode(await new File(out.uri).bytes(), { useTArray: true, formatAsRGBA: false });
-  if (raw.width !== SIZE || raw.height !== SIZE) throw new Error(`Unexpected frame size ${raw.width}×${raw.height}`);
+  if (raw.width !== w || raw.height !== h) throw new Error(`Unexpected frame size ${raw.width}×${raw.height}`);
   return raw.data;
 }
 
@@ -107,6 +108,24 @@ export async function detectVehicles(photo: Photo, roi: Rect, minScore: number, 
       );
     }
     return { boxes: mergeBoxes(found), patches, tiles: tiles.length };
+  } finally {
+    remove(photo.uri);
+    temp.forEach(remove);
+  }
+}
+
+/**
+ * For the AI check: the region around the spots at its real proportions, scaled down, with the
+ * spaces outlined and numbered. Returns base64 JPEG.
+ */
+export async function snapshotForAi(photo: Photo, roi: Rect, spots: Spot[]): Promise<{ b64: string; w: number; h: number }> {
+  const temp: string[] = [];
+  try {
+    const roiPx = clampCrop(photo, { originX: roi.x * photo.width, originY: roi.y * photo.height, width: roi.w * photo.width, height: roi.h * photo.height });
+    const size = aiSize(roiPx.width, roiPx.height);
+    const rgb = await rgbOf(photo, roiPx, temp, size.w, size.h);
+    annotate(rgb, size.w, size.h, norm(photo, roiPx), spots);
+    return { b64: toJpegBase64(rgb, size.w, size.h), ...size };
   } finally {
     remove(photo.uri);
     temp.forEach(remove);

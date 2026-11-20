@@ -3,8 +3,10 @@ import { useState, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { AI_MODELS, type AiModel } from '@/lib/ai';
 import { sendAlert } from '@/lib/ntfy';
-import { updateSettings, useSettings } from '@/lib/store';
+import { setApiKey, useApiKey } from '@/lib/secrets';
+import { updateSettings, usageToday, useSettings } from '@/lib/store';
 import { Icon, Panel, SectionTitle, Tx } from '@/ui/kit';
 import { C, F, GUTTER } from '@/ui/theme';
 
@@ -16,6 +18,13 @@ export default function SettingsScreen() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const apiKey = useApiKey();
+  const [keyDraft, setKeyDraft] = useState('');
+  const usage = usageToday(st);
+  const price = AI_MODELS[st.aiModel] ?? AI_MODELS['claude-haiku-5-5'];
+  // ~900 image tokens + ~250 prompt tokens in, ~40 per space out.
+  const perCheck = (1150 * price.inPerM + (40 + 40 * Math.max(1, st.spots.length)) * price.outPerM) / 1e6;
+  const perMonth = perCheck * Math.min(st.aiCap, 86400 / st.aiInterval) * 30;
 
   async function test() {
     updateSettings({ topic: topic.trim(), server: server.trim() || 'https://ntfy.sh' });
@@ -89,6 +98,60 @@ export default function SettingsScreen() {
               {testing ? <ActivityIndicator size="small" color={C.blueText} /> : <Tx style={s.linkTx}>Send test</Tx>}
             </Pressable>
           </Row>
+        </Panel>
+
+        <SectionTitle title="AI check" />
+        <Panel>
+          <Row label="Ask Claude" hint={apiKey ? 'Sees cars half-hidden behind branches. Sends a small crop of the street to Anthropic.' : 'Add an API key below to turn this on'}>
+            <Toggle value={st.useAI} onChange={(v) => updateSettings({ useAI: v })} />
+          </Row>
+          <Row label="API key" hint={apiKey ? `Saved · ends in ${apiKey.slice(-4)}` : 'From console.anthropic.com · stored in the phone keystore'}>
+            {apiKey ? (
+              <Pressable onPress={() => setApiKey(null)} style={[s.linkBtn, { backgroundColor: 'rgba(248,113,113,0.1)' }]}>
+                <Tx style={[s.linkTx, { color: C.taken }]}>Remove</Tx>
+              </Pressable>
+            ) : (
+              <TextInput
+                value={keyDraft}
+                onChangeText={setKeyDraft}
+                onEndEditing={() => {
+                  if (keyDraft.trim()) setApiKey(keyDraft).then(() => setKeyDraft(''));
+                }}
+                placeholder="sk-ant-…"
+                placeholderTextColor={C.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry
+                style={[s.input, { width: 150 }]}
+                selectionColor={C.blue}
+              />
+            )}
+          </Row>
+          {st.useAI && (
+            <>
+              <Row label="Model">
+                <View style={s.seg}>
+                  {(Object.keys(AI_MODELS) as AiModel[]).map((m) => (
+                    <Pressable key={m} onPress={() => updateSettings({ aiModel: m })} style={[s.segBtn, st.aiModel === m && s.segOn]}>
+                      <Tx style={[s.segTx, st.aiModel === m && { color: C.bg }]}>{m.includes('haiku') ? 'Haiku' : 'Sonnet'}</Tx>
+                    </Pressable>
+                  ))}
+                </View>
+              </Row>
+              <Row label="Check every" hint="A blue-zone space rarely frees up for less than a minute">
+                <Stepper value={st.aiInterval} min={30} max={600} step={30} format={(v) => (v < 60 ? `${v} s` : `${v / 60} min`)} onChange={(v) => updateSettings({ aiInterval: v })} />
+              </Row>
+              <Row label="Confirm after" hint="Answers in a row before a space changes">
+                <Stepper value={st.aiConfirm} min={1} max={5} step={1} format={(v) => `${v}×`} onChange={(v) => updateSettings({ aiConfirm: v })} />
+              </Row>
+              <Row label="Daily limit" hint="After this, the on-phone detector takes over until midnight">
+                <Stepper value={st.aiCap} min={50} max={3000} step={50} format={(v) => `${v}`} onChange={(v) => updateSettings({ aiCap: v })} />
+              </Row>
+              <Row label="Cost" hint={`About $${perCheck.toFixed(4)} per check · up to ~$${perMonth.toFixed(2)} a month at this rate`}>
+                <Tx style={{ fontFamily: F.semibold, fontSize: 14 }}>{`$${usage.cost.toFixed(3)} today`}</Tx>
+              </Row>
+            </>
+          )}
         </Panel>
 
         <SectionTitle title="Detection" />
@@ -210,5 +273,9 @@ const s = StyleSheet.create({
   linkTx: { color: C.blueText, fontFamily: F.semibold, fontSize: 13.5 },
   stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
   stepBtn: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  seg: { flexDirection: 'row', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
+  segBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
+  segOn: { backgroundColor: C.text },
+  segTx: { fontFamily: F.semibold, fontSize: 13, color: C.mute },
   stepVal: { minWidth: 58, textAlign: 'center', fontFamily: F.semibold, fontSize: 14 },
 });

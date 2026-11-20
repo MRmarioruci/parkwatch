@@ -9,7 +9,7 @@ export function Tx({ style, ...p }: TextProps) {
   return <Text {...p} style={[{ color: C.text, fontFamily: F.regular, fontSize: 15 }, style]} />;
 }
 
-type IconName = 'camera' | 'plus' | 'undo' | 'moon' | 'trash' | 'gear' | 'back' | 'lock' | 'eye' | 'target' | 'minus';
+type IconName = 'camera' | 'plus' | 'undo' | 'moon' | 'trash' | 'gear' | 'back' | 'lock' | 'eye' | 'target' | 'minus' | 'list' | 'sparkle';
 
 export function Icon({ name, size = 20, color = C.text, stroke = 2 }: { name: IconName; size?: number; color?: string; stroke?: number }) {
   const p = { stroke: color, strokeWidth: stroke, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
@@ -23,6 +23,8 @@ export function Icon({ name, size = 20, color = C.text, stroke = 2 }: { name: Ic
       )}
       {name === 'plus' && <Path {...p} d="M12 5v14M5 12h14" />}
       {name === 'minus' && <Path {...p} d="M5 12h14" />}
+      {name === 'list' && <Path {...p} d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />}
+      {name === 'sparkle' && <Path {...p} d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />}
       {name === 'undo' && (
         <>
           <Path {...p} d="M9 14 4 9l5-5" />
