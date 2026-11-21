@@ -7,9 +7,10 @@ import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, TextInp
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, Line, LinearGradient, Path, Polygon, Rect, Stop } from 'react-native-svg';
 
+import { PROVIDERS } from '@/lib/ai';
 import { useApiKey } from '@/lib/secrets';
 import { since, splitQuad, type Box, type Pt, type Spot, type Track } from '@/lib/spots';
-import { getSettings, updateSettings, usageToday, useSettings } from '@/lib/store';
+import { aiChoice, getSettings, updateSettings, usageToday, useSettings } from '@/lib/store';
 import { useWatcher } from '@/lib/watcher';
 import { Btn, Icon, Tx } from '@/ui/kit';
 import { C, F, GUTTER, RGB } from '@/ui/theme';
@@ -30,7 +31,9 @@ function Watch() {
   const insets = useSafeAreaInsets();
   const { width: W, height: H } = useWindowDimensions();
   const settings = useSettings();
-  const apiKey = useApiKey();
+  const { provider } = aiChoice(settings);
+  const aiName = PROVIDERS[provider].label;
+  const apiKey = useApiKey(provider);
   const { spots } = settings;
   const camera = useRef<CameraView>(null);
   const [camReady, setCamReady] = useState(false);
@@ -118,7 +121,7 @@ function Watch() {
 
   async function startWatching() {
     if (!settings.topic.trim()) setToast('Set your ntfy topic in Settings to get alerts');
-    else if (settings.useAI && !apiKey) setToast('No Claude API key yet: using the on-phone detector');
+    else if (settings.useAI && !apiKey) setToast(`No ${aiName} API key yet: using the on-phone detector`);
     setSheet(false);
     await w.start();
     poke();
@@ -132,7 +135,7 @@ function Watch() {
   // ---------- what the floating guide says ----------
   let guide: string | null = null;
   if (drawing) guide = draft.length < 3 ? `Tap the corners of one space · ${draft.length}/3` : `${draft.length} corners · save, or keep tapping`;
-  else if (w.watching && !known) guide = ai ? 'Asking Claude…' : `Looking · confirming over ${settings.confirm} checks`;
+  else if (w.watching && !known) guide = ai ? `Asking ${aiName}…` : `Looking · confirming over ${settings.confirm} checks`;
   else if (!w.watching && !spots.length && camReady) guide = 'Tap + to mark a parking space';
 
   const freeNames = spots.filter((sp) => w.tracks[sp.id]?.state === 'free').slice(0, 2).map((sp) => sp.name).join(', ');
@@ -307,7 +310,7 @@ function Watch() {
             <View style={st.handle} />
             <View style={st.sheetHead}>
               <Tx style={{ fontFamily: F.bold, fontSize: 17 }}>Spaces</Tx>
-              <Tx style={{ fontSize: 12.5, color: C.mute }}>{ai ? `Claude · ${usage.calls} checks today · $${usage.cost.toFixed(2)}` : 'On-phone detector'}</Tx>
+              <Tx style={{ fontSize: 12.5, color: C.mute }}>{ai ? `${aiName} · ${usage.calls} checks today · $${usage.cost.toFixed(2)}` : 'On-phone detector'}</Tx>
             </View>
             <ScrollView contentContainerStyle={{ paddingBottom: 8 }}>
               <View style={st.panel}>
@@ -333,7 +336,7 @@ function Watch() {
                 <Pressable onPress={runTest} disabled={w.checking || !camReady} style={st.testRow}>
                   <Icon name="target" size={18} color={C.blueText} />
                   <View style={{ flex: 1 }}>
-                    <Tx style={{ fontFamily: F.semibold, fontSize: 14.5, color: C.blueText }}>{ai ? 'Ask Claude now' : 'Test detection'}</Tx>
+                    <Tx style={{ fontFamily: F.semibold, fontSize: 14.5, color: C.blueText }}>{ai ? `Ask ${aiName} now` : 'Test detection'}</Tx>
                     <Tx style={{ fontSize: 12.5, color: C.mute }}>{ai ? 'One AI check, to see what it makes of your spaces' : 'One check now, to see what the camera picks up'}</Tx>
                   </View>
                   {w.checking && <ActivityIndicator color={C.blueText} />}

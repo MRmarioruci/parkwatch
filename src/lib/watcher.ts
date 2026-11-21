@@ -5,12 +5,12 @@ import type { CameraView } from 'expo-camera';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useEffect, useRef, useState, type RefObject } from 'react';
 
-import { AI_MODELS, askClaude, type AiReading } from './ai';
+import { askModel, modelLabel, PROVIDERS, type AiReading } from './ai';
 import { detectVehicles, snapshotForAi, type Look } from './detector';
 import { sendAlert } from './ntfy';
 import { canAlert, coverage, inQuietHours, newTrack, override, regionOfInterest, samplePoints, step, type Box, type Patch, type Spot, type Track } from './spots';
 import { getApiKey } from './secrets';
-import { getSettings, recordAiCall, usageToday } from './store';
+import { aiChoice, getSettings, recordAiCall, usageToday } from './store';
 
 const KEEP_AWAKE = 'parkwatch-watch';
 
@@ -36,11 +36,11 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
 
   const note = (text: string) => setLog((l) => [{ at: Date.now(), text }, ...l].slice(0, 60));
 
-  /** Whether this check goes to Claude: AI on, a key set, and today's cap not reached. */
+  /** Whether this check goes to the AI model: AI on, a key set, and today's cap not reached. */
   function aiActive(): { on: boolean; why?: string } {
     const s = getSettings();
     if (!s.useAI) return { on: false };
-    if (!getApiKey()) return { on: false, why: 'no API key' };
+    if (!getApiKey(aiChoice(s).provider)) return { on: false, why: `no ${PROVIDERS[aiChoice(s).provider].label} API key` };
     if (usageToday(s).calls >= s.aiCap) return { on: false, why: `daily cap of ${s.aiCap} reached` };
     return { on: true };
   }
@@ -58,11 +58,11 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
     return detectVehicles(await photo(), regionOfInterest(spots), getSettings().minScore, spots);
   }
 
-  /** One look by Claude. Readings are per spot, in order; null = unsure / not reported. */
-  async function askAi(): Promise<{ readings: (AiReading | null)[]; cost: number }> {
-    const s = getSettings();
+  /** One look by the AI model. Readings are per spot, in order; null = unsure / not reported. */
+  async function askAi(): Promise<{ readings: (AiReading | null)[]; cost: number | null }> {
+    const { provider, model } = aiChoice();
     const snap = await snapshotForAi(await photo(), regionOfInterest(spots), spots);
-    const r = await askClaude(getApiKey()!, s.aiModel, snap.b64, spots.length);
+    const r = await askModel(provider, getApiKey(provider)!, model, snap.b64, spots.length);
     recordAiCall(r.cost);
     const readings = spots.map((_, k) => r.readings.find((x) => Number(x.space) === k + 1) ?? null);
     return { readings, cost: r.cost };
@@ -173,7 +173,7 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
     const s = getSettings();
     const ai = aiActive();
     warnedFallback.current = '';
-    note(`Watching ${spots.length} spot${spots.length === 1 ? '' : 's'} ${ai.on ? `with ${AI_MODELS[s.aiModel]?.label ?? 'Claude'}, every ${s.aiInterval}s` : `on the phone, every ${s.interval}s`}`);
+    note(`Watching ${spots.length} spot${spots.length === 1 ? '' : 's'} ${ai.on ? `with ${modelLabel(aiChoice(s).provider, aiChoice(s).model)}, every ${s.aiInterval}s` : `on the phone, every ${s.interval}s`}`);
     setWatching(true);
   }
 
@@ -200,7 +200,7 @@ export function useWatcher(camera: RefObject<CameraView | null>, spots: Spot[]) 
         tracksRef.current = next;
         setTracks(next);
         const free = readings.filter((r) => r?.state === 'free').length;
-        return `Claude: ${free} of ${spots.length} free · cost $${cost.toFixed(4)}. Details under Spots.`;
+        return `${PROVIDERS[aiChoice().provider].label}: ${free} of ${spots.length} free${cost != null ? ` · cost $${cost.toFixed(4)}` : ''}. Details under Spaces.`;
       }
       const { boxes: found, patches } = await look();
       lastPatches.current = patches;

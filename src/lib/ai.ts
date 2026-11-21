@@ -1,6 +1,7 @@
 // "AI check": send a scaled-down view of the parking strip, with the marked spaces drawn on it,
-// to a Claude vision model and ask which spaces are free. Unlike the on-phone detector, a large
-// vision model can tell a car is there from a roof or a wheel showing between branches.
+// to a vision model (Claude, Gemini or ChatGPT) and ask which spaces are free. Unlike the
+// on-phone detector, a large vision model can tell a car is there from a roof or a wheel
+// showing between branches.
 
 import { Buffer } from 'buffer';
 import * as jpeg from 'jpeg-js';
@@ -11,17 +12,54 @@ import type { Pt, Rect, Spot } from './spots';
 const g = globalThis as { Buffer?: typeof Buffer };
 if (!g.Buffer) g.Buffer = Buffer;
 
-export const AI_MODELS = {
-  'claude-haiku-5-5': { label: 'Claude Haiku 5.5', inPerM: 0.1, outPerM: 0.5 },
-  'claude-sonnet-5-5': { label: 'Claude Sonnet 5.5', inPerM: 2, outPerM: 10 },
-} as const;
-export type AiModel = keyof typeof AI_MODELS;
+export type Provider = 'anthropic' | 'google' | 'openai';
+
+export const PROVIDERS: Record<Provider, { label: string; short: string; keyHint: string; keyPlaceholder: string; console: string }> = {
+  anthropic: { label: 'Claude', short: 'Claude', keyHint: 'From console.anthropic.com', keyPlaceholder: 'sk-ant-…', console: 'console.anthropic.com' },
+  google: { label: 'Gemini', short: 'Gemini', keyHint: 'From aistudio.google.com', keyPlaceholder: 'AIza…', console: 'aistudio.google.com' },
+  openai: { label: 'ChatGPT', short: 'ChatGPT', keyHint: 'From platform.openai.com', keyPlaceholder: 'sk-…', console: 'platform.openai.com' },
+};
+
+/**
+ * Suggested models per provider, with list prices (USD per million tokens, November 2026).
+ * Any other model id can be typed in Settings; its cost then shows as unknown.
+ */
+export const PRESETS: Record<Provider, { id: string; label: string; inPerM: number; outPerM: number }[]> = {
+  anthropic: [
+    { id: 'claude-haiku-5-5', label: 'Haiku 5.5', inPerM: 0.1, outPerM: 0.5 },
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', inPerM: 2, outPerM: 10 },
+  ],
+  google: [
+    { id: 'gemini-3.1-flash-lite', label: '3.1 Flash-Lite', inPerM: 0.25, outPerM: 1.5 },
+    { id: 'gemini-3-flash-preview', label: '3 Flash', inPerM: 0.5, outPerM: 3 },
+  ],
+  openai: [
+    { id: 'gpt-5.4-nano', label: '5.4 nano', inPerM: 0.2, outPerM: 1.25 },
+    { id: 'gpt-5.4-mini', label: '5.4 mini', inPerM: 0.75, outPerM: 4.5 },
+  ],
+};
+
+export const DEFAULT_MODEL: Record<Provider, string> = { anthropic: 'claude-haiku-5-5', google: 'gemini-3.1-flash-lite', openai: 'gpt-5.4-mini' };
+
+export function priceOf(model: string): { inPerM: number; outPerM: number } | null {
+  for (const list of Object.values(PRESETS)) {
+    const hit = list.find((m) => m.id === model);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export const modelLabel = (provider: Provider, model: string) => {
+  const preset = PRESETS[provider].find((m) => m.id === model);
+  return `${PROVIDERS[provider].label} ${preset?.label ?? model}`;
+};
 
 /** Longest side of the image sent. Big enough to judge cars, small enough that plates blur. */
 export const AI_LONG_SIDE = 1064;
 
 export type AiReading = { space: number; state: 'free' | 'taken' | 'unsure'; confidence?: number; reason?: string };
-export type AiResult = { readings: AiReading[]; inTokens: number; outTokens: number; cost: number };
+/** cost is null when the model's price isn't known. */
+export type AiResult = { readings: AiReading[]; inTokens: number; outTokens: number; cost: number | null };
 
 // ---------- drawing the spaces onto the picture ----------
 
@@ -96,7 +134,7 @@ export function toJpegBase64(rgb: Uint8Array, w: number, h: number, quality = 82
   return Buffer.from(out.data).toString('base64');
 }
 
-// ---------- asking Claude ----------
+// ---------- asking the model ----------
 
 const SYSTEM = `You watch a residential street from a balcony to find free parking spaces.
 The image shows the street with parking spaces outlined in magenta and labelled with white numbers on black.
@@ -105,66 +143,163 @@ Cars are often partly hidden behind branches, bushes, railings or other cars. Us
 A space is "free" only if there is no vehicle in it and a car could park there now. A car parked across two outlined spaces makes both taken.
 Use "unsure" only when the space is hidden so much that you cannot reasonably infer either way.`;
 
-const TOOL = {
-  name: 'report_spaces',
-  description: 'Report whether each numbered parking space is free or taken.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      spaces: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            space: { type: 'integer', description: 'The number shown on the space' },
-            state: { type: 'string', enum: ['free', 'taken', 'unsure'] },
-            confidence: { type: 'number', description: '0 to 1' },
-            reason: { type: 'string', description: 'What you see, at most 12 words' },
-          },
-          required: ['space', 'state', 'reason'],
-        },
-      },
-    },
-    required: ['spaces'],
-  },
+const ask = (spaces: number) => `There ${spaces === 1 ? 'is 1 numbered space' : `are ${spaces} numbered spaces (1 to ${spaces})`}. Report each one.`;
+
+const DESCR = {
+  space: 'The number shown on the space',
+  confidence: '0 to 1',
+  reason: 'What you see, at most 12 words',
 };
 
-export async function askClaude(apiKey: string, model: AiModel, imageB64: string, spaces: number): Promise<AiResult> {
+/** JSON Schema of the answer (Claude tool input, OpenAI strict schema). */
+const SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    spaces: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          space: { type: 'integer', description: DESCR.space },
+          state: { type: 'string', enum: ['free', 'taken', 'unsure'] },
+          confidence: { type: 'number', description: DESCR.confidence },
+          reason: { type: 'string', description: DESCR.reason },
+        },
+        required: ['space', 'state', 'confidence', 'reason'],
+      },
+    },
+  },
+  required: ['spaces'],
+};
+
+/** The same answer in Gemini's schema dialect (OpenAPI subset, upper-case types). */
+const GEMINI_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    spaces: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          space: { type: 'INTEGER', description: DESCR.space },
+          state: { type: 'STRING', enum: ['free', 'taken', 'unsure'] },
+          confidence: { type: 'NUMBER', description: DESCR.confidence },
+          reason: { type: 'STRING', description: DESCR.reason },
+        },
+        required: ['space', 'state', 'reason'],
+      },
+    },
+  },
+  required: ['spaces'],
+};
+
+type Raw = { spaces: unknown; inTokens: number; outTokens: number };
+
+async function post(url: string, headers: Record<string, string>, body: unknown, who: string) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  const timer = setTimeout(() => ctrl.abort(), 60_000);
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        max_tokens: 200 + spaces * 60,
-        system: SYSTEM,
-        tools: [TOOL],
-        tool_choice: { type: 'tool', name: TOOL.name },
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } },
-              { type: 'text', text: `There ${spaces === 1 ? 'is 1 numbered space' : `are ${spaces} numbered spaces (1 to ${spaces})`}. Report each one.` },
-            ],
-          },
-        ],
-      }),
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(body?.error?.message ? `Claude: ${body.error.message}` : `Claude answered ${res.status}`);
-    const use = (body?.content ?? []).find((b: { type: string }) => b.type === 'tool_use');
-    const readings: AiReading[] = Array.isArray(use?.input?.spaces) ? use.input.spaces : [];
-    const inTokens = Number(body?.usage?.input_tokens ?? 0);
-    const outTokens = Number(body?.usage?.output_tokens ?? 0);
-    const price = AI_MODELS[model] ?? AI_MODELS['claude-haiku-5-5'];
-    return { readings, inTokens, outTokens, cost: (inTokens * price.inPerM + outTokens * price.outPerM) / 1e6 };
+    const res = await fetch(url, { method: 'POST', signal: ctrl.signal, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg = json?.error?.message ?? (Array.isArray(json) ? json[0]?.error?.message : undefined);
+      throw new Error(msg ? `${who}: ${msg}` : `${who} answered ${res.status}`);
+    }
+    return json;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function parseJson(text: string | undefined): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+  } catch {
+    return null;
+  }
+}
+
+async function askAnthropic(key: string, model: string, img: string, spaces: number): Promise<Raw> {
+  const body = await post(
+    'https://api.anthropic.com/v1/messages',
+    { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    {
+      model,
+      max_tokens: 200 + spaces * 60,
+      system: SYSTEM,
+      tools: [{ name: 'report_spaces', description: 'Report whether each numbered parking space is free or taken.', input_schema: SCHEMA }],
+      tool_choice: { type: 'tool', name: 'report_spaces' },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } },
+            { type: 'text', text: ask(spaces) },
+          ],
+        },
+      ],
+    },
+    'Claude',
+  );
+  const use = (body?.content ?? []).find((b: { type: string }) => b.type === 'tool_use');
+  return { spaces: use?.input?.spaces, inTokens: Number(body?.usage?.input_tokens ?? 0), outTokens: Number(body?.usage?.output_tokens ?? 0) };
+}
+
+async function askGoogle(key: string, model: string, img: string, spaces: number): Promise<Raw> {
+  const body = await post(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    { 'x-goog-api-key': key },
+    {
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: img } }, { text: ask(spaces) }] }],
+      generationConfig: { responseMimeType: 'application/json', responseSchema: GEMINI_SCHEMA, temperature: 0.2 },
+    },
+    'Gemini',
+  );
+  const parts: { text?: string; thought?: boolean }[] = body?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.filter((p) => !p.thought && p.text).map((p) => p.text).join('');
+  const u = body?.usageMetadata ?? {};
+  // Thinking tokens are billed as output.
+  return { spaces: (parseJson(text) as { spaces?: unknown } | null)?.spaces, inTokens: Number(u.promptTokenCount ?? 0), outTokens: Number(u.candidatesTokenCount ?? 0) + Number(u.thoughtsTokenCount ?? 0) };
+}
+
+async function askOpenAI(key: string, model: string, img: string, spaces: number): Promise<Raw> {
+  const body = await post(
+    'https://api.openai.com/v1/chat/completions',
+    { authorization: `Bearer ${key}` },
+    {
+      model,
+      max_completion_tokens: 4000,
+      response_format: { type: 'json_schema', json_schema: { name: 'report_spaces', strict: true, schema: SCHEMA } },
+      messages: [
+        { role: 'system', content: SYSTEM },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: ask(spaces) },
+            { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${img}`, detail: 'high' } },
+          ],
+        },
+      ],
+    },
+    'ChatGPT',
+  );
+  const msg = body?.choices?.[0]?.message;
+  if (msg?.refusal) throw new Error(`ChatGPT: ${msg.refusal}`);
+  return { spaces: (parseJson(msg?.content) as { spaces?: unknown } | null)?.spaces, inTokens: Number(body?.usage?.prompt_tokens ?? 0), outTokens: Number(body?.usage?.completion_tokens ?? 0) };
+}
+
+/** Ask the chosen provider which numbered spaces in the (annotated) image are free. */
+export async function askModel(provider: Provider, apiKey: string, model: string, imageB64: string, spaces: number): Promise<AiResult> {
+  const fn = provider === 'google' ? askGoogle : provider === 'openai' ? askOpenAI : askAnthropic;
+  const raw = await fn(apiKey, model, imageB64, spaces);
+  const readings: AiReading[] = Array.isArray(raw.spaces) ? (raw.spaces as AiReading[]) : [];
+  if (!readings.length) throw new Error(`${PROVIDERS[provider].label} gave no usable answer`);
+  const price = priceOf(model);
+  return { readings, inTokens: raw.inTokens, outTokens: raw.outTokens, cost: price ? (raw.inTokens * price.inPerM + raw.outTokens * price.outPerM) / 1e6 : null };
 }
 
 /** Output size for a region, keeping its proportions. */

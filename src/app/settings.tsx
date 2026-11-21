@@ -3,10 +3,10 @@ import { useState, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AI_MODELS, type AiModel } from '@/lib/ai';
+import { PRESETS, priceOf, PROVIDERS, type Provider } from '@/lib/ai';
 import { sendAlert } from '@/lib/ntfy';
 import { setApiKey, useApiKey } from '@/lib/secrets';
-import { updateSettings, usageToday, useSettings } from '@/lib/store';
+import { aiChoice, updateSettings, usageToday, useSettings } from '@/lib/store';
 import { Icon, Panel, SectionTitle, Tx } from '@/ui/kit';
 import { C, F, GUTTER } from '@/ui/theme';
 
@@ -18,12 +18,15 @@ export default function SettingsScreen() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const apiKey = useApiKey();
+  const { provider, model } = aiChoice(st);
+  const apiKey = useApiKey(provider);
   const [keyDraft, setKeyDraft] = useState('');
+  const [customOpen, setCustomOpen] = useState(false);
+  const isCustom = !PRESETS[provider].some((m) => m.id === model);
   const usage = usageToday(st);
-  const price = AI_MODELS[st.aiModel] ?? AI_MODELS['claude-haiku-5-5'];
-  // ~900 image tokens + ~250 prompt tokens in, ~40 per space out.
-  const perCheck = (1150 * price.inPerM + (40 + 40 * Math.max(1, st.spots.length)) * price.outPerM) / 1e6;
+  const price = priceOf(model);
+  // ~900 image tokens + ~250 prompt tokens in, ~40 per space out (reasoning models use more).
+  const perCheck = price ? (1150 * price.inPerM + (40 + 40 * Math.max(1, st.spots.length)) * price.outPerM) / 1e6 : 0;
   const perMonth = perCheck * Math.min(st.aiCap, 86400 / st.aiInterval) * 30;
 
   async function test() {
@@ -102,22 +105,32 @@ export default function SettingsScreen() {
 
         <SectionTitle title="AI check" />
         <Panel>
-          <Row label="Ask Claude" hint={apiKey ? 'Sees cars half-hidden behind branches. Sends a small crop of the street to Anthropic.' : 'Add an API key below to turn this on'}>
+          <Row label="Use AI check" hint={apiKey ? `Sees cars half-hidden behind branches. Sends a small crop of the street to ${COMPANY[provider]}.` : `Add a ${PROVIDERS[provider].label} API key below to turn this on`}>
             <Toggle value={st.useAI} onChange={(v) => updateSettings({ useAI: v })} />
           </Row>
-          <Row label="API key" hint={apiKey ? `Saved · ends in ${apiKey.slice(-4)}` : 'From console.anthropic.com · stored in the phone keystore'}>
+          <Row label="Provider">
+            <View style={s.seg}>
+              {(Object.keys(PROVIDERS) as Provider[]).map((p) => (
+                <Pressable key={p} accessibilityLabel={PROVIDERS[p].label} onPress={() => updateSettings({ aiProvider: p })} style={[s.segBtn, provider === p && s.segOn]}>
+                  <Tx style={[s.segTx, provider === p && { color: C.bg }]}>{PROVIDERS[p].label}</Tx>
+                </Pressable>
+              ))}
+            </View>
+          </Row>
+          <Row label={`${PROVIDERS[provider].label} API key`} hint={apiKey ? `Saved · ends in ${apiKey.slice(-4)}` : `${PROVIDERS[provider].keyHint} · stored in the phone keystore`}>
             {apiKey ? (
-              <Pressable onPress={() => setApiKey(null)} style={[s.linkBtn, { backgroundColor: 'rgba(248,113,113,0.1)' }]}>
+              <Pressable onPress={() => setApiKey(provider, null)} style={[s.linkBtn, { backgroundColor: 'rgba(248,113,113,0.1)' }]}>
                 <Tx style={[s.linkTx, { color: C.taken }]}>Remove</Tx>
               </Pressable>
             ) : (
               <TextInput
+                key={provider}
                 value={keyDraft}
                 onChangeText={setKeyDraft}
                 onEndEditing={() => {
-                  if (keyDraft.trim()) setApiKey(keyDraft).then(() => setKeyDraft(''));
+                  if (keyDraft.trim()) setApiKey(provider, keyDraft).then(() => setKeyDraft(''));
                 }}
-                placeholder="sk-ant-…"
+                placeholder={PROVIDERS[provider].keyPlaceholder}
                 placeholderTextColor={C.faint}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -129,15 +142,36 @@ export default function SettingsScreen() {
           </Row>
           {st.useAI && (
             <>
-              <Row label="Model">
-                <View style={s.seg}>
-                  {(Object.keys(AI_MODELS) as AiModel[]).map((m) => (
-                    <Pressable key={m} onPress={() => updateSettings({ aiModel: m })} style={[s.segBtn, st.aiModel === m && s.segOn]}>
-                      <Tx style={[s.segTx, st.aiModel === m && { color: C.bg }]}>{m.includes('haiku') ? 'Haiku' : 'Sonnet'}</Tx>
+              <View style={s.block}>
+                <Tx style={{ fontSize: 14.5 }}>Model</Tx>
+                <View style={s.chips}>
+                  {PRESETS[provider].map((m) => (
+                    <Pressable key={m.id} onPress={() => updateSettings({ aiModels: { ...st.aiModels, [provider]: m.id } })} style={[s.chip, model === m.id && s.chipOn]}>
+                      <Tx style={[s.chipTx, model === m.id && { color: C.bg }]}>{m.label}</Tx>
                     </Pressable>
                   ))}
+                  <Pressable onPress={() => setCustomOpen(true)} style={[s.chip, isCustom && s.chipOn]}>
+                    <Tx style={[s.chipTx, isCustom && { color: C.bg }]}>{isCustom ? model : 'Other…'}</Tx>
+                  </Pressable>
                 </View>
-              </Row>
+                {(customOpen || isCustom) && (
+                  <TextInput
+                    key={`m-${provider}`}
+                    defaultValue={isCustom ? model : ''}
+                    onEndEditing={(e) => {
+                      const id = e.nativeEvent.text.trim();
+                      if (id) updateSettings({ aiModels: { ...st.aiModels, [provider]: id } });
+                      setCustomOpen(false);
+                    }}
+                    placeholder="Model id, e.g. a newer release"
+                    placeholderTextColor={C.faint}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[s.input, { textAlign: 'left', marginTop: 10 }]}
+                    selectionColor={C.blue}
+                  />
+                )}
+              </View>
               <Row label="Check every" hint="A blue-zone space rarely frees up for less than a minute">
                 <Stepper value={st.aiInterval} min={30} max={600} step={30} format={(v) => (v < 60 ? `${v} s` : `${v / 60} min`)} onChange={(v) => updateSettings({ aiInterval: v })} />
               </Row>
@@ -147,7 +181,7 @@ export default function SettingsScreen() {
               <Row label="Daily limit" hint="After this, the on-phone detector takes over until midnight">
                 <Stepper value={st.aiCap} min={50} max={3000} step={50} format={(v) => `${v}`} onChange={(v) => updateSettings({ aiCap: v })} />
               </Row>
-              <Row label="Cost" hint={`About $${perCheck.toFixed(4)} per check · up to ~$${perMonth.toFixed(2)} a month at this rate`}>
+              <Row label="Cost" hint={price ? `About $${perCheck.toFixed(4)} per check · up to ~$${perMonth.toFixed(2)} a month at this rate` : 'Price unknown for this model · see your provider’s dashboard'}>
                 <Tx style={{ fontFamily: F.semibold, fontSize: 14 }}>{`$${usage.cost.toFixed(3)} today`}</Tx>
               </Row>
             </>
@@ -226,6 +260,8 @@ export default function SettingsScreen() {
   );
 }
 
+const COMPANY: Record<Provider, string> = { anthropic: 'Anthropic', google: 'Google', openai: 'OpenAI' };
+
 const hh = (h: number) => `${String(h).padStart(2, '0')}:00`;
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
@@ -273,6 +309,11 @@ const s = StyleSheet.create({
   linkTx: { color: C.blueText, fontFamily: F.semibold, fontSize: 13.5 },
   stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
   stepBtn: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  block: { paddingHorizontal: 16, paddingVertical: 12, borderTopWidth: 1, borderTopColor: C.hair, marginTop: -1 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  chip: { paddingHorizontal: 12, height: 34, justifyContent: 'center', borderRadius: 17, backgroundColor: C.surface2 },
+  chipOn: { backgroundColor: C.text },
+  chipTx: { fontFamily: F.semibold, fontSize: 13, color: C.mute },
   seg: { flexDirection: 'row', backgroundColor: C.surface2, borderRadius: 10, padding: 3 },
   segBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8 },
   segOn: { backgroundColor: C.text },

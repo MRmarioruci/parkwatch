@@ -3,7 +3,7 @@
 import * as SQLite from 'expo-sqlite';
 import { useSyncExternalStore } from 'react';
 
-import type { AiModel } from './ai';
+import { DEFAULT_MODEL, type Provider } from './ai';
 import type { Spot } from './spots';
 
 export type Settings = {
@@ -35,9 +35,13 @@ export type Settings = {
   memory: boolean;
   /** How alike (0..1) the spot must look to count as unchanged. */
   lookSame: number;
-  /** Ask Claude to judge the spots (needs an API key) instead of the on-phone detector. */
+  /** Ask a vision model to judge the spots (needs an API key) instead of the on-phone detector. */
   useAI: boolean;
-  aiModel: AiModel;
+  aiProvider: Provider;
+  /** Chosen model id per provider. */
+  aiModels: Record<Provider, string>;
+  /** Before providers were added: the Claude model. Read once to migrate. */
+  aiModel?: string;
   /** Seconds between AI checks, checks in a row before a change, and max AI checks per day. */
   aiInterval: number;
   aiConfirm: number;
@@ -64,7 +68,8 @@ const DEFAULTS: Settings = {
   memory: true,
   lookSame: 0.75,
   useAI: true,
-  aiModel: 'claude-haiku-5-5',
+  aiProvider: 'anthropic',
+  aiModels: { ...DEFAULT_MODEL },
   aiInterval: 60,
   aiConfirm: 2,
   aiCap: 600,
@@ -83,7 +88,10 @@ function load(): Settings {
       stored[r.key] = JSON.parse(r.value);
     } catch {}
   }
-  return { ...DEFAULTS, ...stored } as Settings;
+  const s = { ...DEFAULTS, ...stored } as Settings;
+  s.aiModels = { ...DEFAULT_MODEL, ...(s.aiModels ?? {}) };
+  if (typeof s.aiModel === 'string' && !stored.aiModels) s.aiModels.anthropic = s.aiModel;
+  return s;
 }
 
 let snapshot = load();
@@ -120,7 +128,14 @@ export function usageToday(s: Settings = snapshot) {
   return s.usage.day === today() ? s.usage : { day: today(), calls: 0, cost: 0 };
 }
 
-export function recordAiCall(cost: number) {
+/** cost null = price unknown for that model: counted as a call, not added to the spend. */
+export function recordAiCall(cost: number | null) {
   const u = usageToday();
-  updateSettings({ usage: { day: u.day, calls: u.calls + 1, cost: u.cost + cost } });
+  updateSettings({ usage: { day: u.day, calls: u.calls + 1, cost: u.cost + (cost ?? 0) } });
+}
+
+/** Provider and model the AI check uses. */
+export function aiChoice(s: Settings = snapshot): { provider: Provider; model: string } {
+  const provider = s.aiProvider ?? 'anthropic';
+  return { provider, model: (s.aiModels?.[provider] || DEFAULT_MODEL[provider]).trim() };
 }
